@@ -428,6 +428,14 @@ class EmulatorServer implements Emulator {
         return this.engine.getSubmission(uid, url.searchParams.get('pageNo'), url.searchParams.get('pageSize'));
       });
     }
+    if (path === '/api/v1.0/documents/recent') {
+      if (method !== 'GET') return this.engine.methodNotAllowed('GET');
+      return this.limitedApi(req, 'getRecent', (tenant) => this.engine.getRecent(tenant, url.searchParams));
+    }
+    if (path === '/api/v1.0/documents/search') {
+      if (method !== 'GET') return this.engine.methodNotAllowed('GET');
+      return this.limitedApi(req, 'search', (tenant) => this.engine.searchDocuments(tenant, url.searchParams));
+    }
     if (rawDoc) {
       if (method !== 'GET') return this.engine.methodNotAllowed('GET');
       return this.limitedApi(req, 'getDocument', () => {
@@ -590,6 +598,8 @@ function apiEndpoint(path: string): RateLimitEndpoint | null {
   if (path === '/api/v1.0/documentsubmissions') return 'submit';
   if (/^\/api\/v1\.0\/documentsubmissions\/[^/]+$/.test(path)) return 'getSubmission';
   if (/^\/api\/v1\.0\/documents\/state\/[^/]+\/state$/.test(path)) return 'cancelReject';
+  if (path === '/api/v1.0/documents/recent') return 'getRecent';
+  if (path === '/api/v1.0/documents/search') return 'search';
   if (/^\/api\/v1\.0\/documents\/[^/]+\/raw$/.test(path)) return 'getDocument';
   if (/^\/api\/v1\.0\/documents\/[^/]+\/details$/.test(path)) return 'getDocumentDetails';
   if (/^\/api\/v1\.0\/taxpayer\/validate\/[^/]+$/.test(path)) return 'validateTin';

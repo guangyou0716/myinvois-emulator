@@ -147,7 +147,18 @@ function fullCollection(omit?: string): PostmanCollection {
       },
       { request: { method: 'PUT', body: { mode: 'raw', raw: '{"status":"rejected","reason":"x"}' } } },
     ),
-    requestItem('Get Recent Documents', 'https://{{apiBaseUrl}}/api/v1.0/documents/recent?pageNo={pageNo}'),
+    requestItem('Get Recent Documents', {
+      raw: 'https://{{apiBaseUrl}}/api/v1.0/documents/recent?pageNo={pageNo}&pageSize={pageSize}&direction={direction}&status={status}',
+      protocol: 'https',
+      host: ['{{apiBaseUrl}}'],
+      path: ['api', 'v1.0', 'documents', 'recent'],
+      query: [
+        { key: 'pageNo', value: '{pageNo}' },
+        { key: 'pageSize', value: '{pageSize}' },
+        { key: 'direction', value: '{direction}' },
+        { key: 'status', value: '{status}' },
+      ],
+    }),
     requestItem('Get Submission', {
       raw: 'https://{{apiBaseUrl}}/api/v1.0/documentsubmissions/:submissionUid',
       protocol: 'https',
@@ -169,7 +180,19 @@ function fullCollection(omit?: string): PostmanCollection {
       path: ['api', 'v1.0', 'documents', ':uuid', 'details'],
       variable: [{ key: 'uuid', value: '' }],
     }),
-    requestItem('Search Documents', 'https://{{apiBaseUrl}}/api/v1.0/documents/search?uuid={uuid}'),
+    requestItem('Search Documents', {
+      raw: 'https://{{apiBaseUrl}}/api/v1.0/documents/search?uuid={uuid}&submissionDateFrom={submissionDateFrom}&submissionDateTo={submissionDateTo}&status={status}&searchQuery={searchQuery}',
+      protocol: 'https',
+      host: ['{{apiBaseUrl}}'],
+      path: ['api', 'v1.0', 'documents', 'search'],
+      query: [
+        { key: 'uuid', value: '{uuid}' },
+        { key: 'submissionDateFrom', value: '{submissionDateFrom}' },
+        { key: 'submissionDateTo', value: '{submissionDateTo}' },
+        { key: 'status', value: '{status}' },
+        { key: 'searchQuery', value: '{searchQuery}' },
+      ],
+    }),
   ];
   const platform: PostmanItem[] = [
     loginItem('Login as Taxpayer System'),
@@ -343,20 +366,45 @@ describe('transformCollection', () => {
     );
   });
 
-  it('omits skipped platform and search requests from the runnable collection and inserts the clock helper after Submit', () => {
+  it('omits skipped platform requests from the runnable collection and inserts the clock helper after Submit', () => {
     const { collection, skipped, helper } = transform();
     const items = flatten(collection.item);
     const names = items.map((item) => item.name);
     expect(names.indexOf('Submit Documents')).toBeLessThan(names.indexOf(CLOCK_ADVANCE_NAME));
     expect(names.indexOf(CLOCK_ADVANCE_NAME)).toBeLessThan(names.indexOf('Get Submission'));
+    expect(names).toContain('Get Recent Documents');
+    expect(names).toContain('Search Documents');
+    expect(names.indexOf('Get Document Details')).toBeLessThan(names.indexOf('Get Recent Documents'));
+    expect(names.indexOf('Get Recent Documents')).toBeLessThan(names.indexOf('Search Documents'));
     expect(helper).toEqual({ name: CLOCK_ADVANCE_NAME, expectedStatus: 200 });
     expect(CLOCK_ADVANCE_MS).toBe(2000);
 
     for (const entry of SKIPPED) {
       expect(names).not.toContain(entry.name);
     }
+    expect(skipped).toHaveLength(4);
     expect(skipped.every((entry) => entry.present)).toBe(true);
     expect(skipped.map((entry) => entry.reason)).toEqual(SKIPPED.map((entry) => entry.reason));
+  });
+
+  it('drops invalid recent/search placeholders and fills a valid search date range', () => {
+    const { collection } = transform();
+    const items = flatten(collection.item);
+    const recent = urlOf(byName(items, 'Get Recent Documents'));
+    expect(recent.path).toEqual(['api', 'v1.0', 'documents', 'recent']);
+    expect(recent.query ?? []).toEqual([]);
+    expect(recent.raw).toBe(`${BASE}/api/v1.0/documents/recent`);
+
+    const search = urlOf(byName(items, 'Search Documents'));
+    expect(search.path).toEqual(['api', 'v1.0', 'documents', 'search']);
+    expect(search.query).toEqual([
+      { key: 'uuid', value: '{{documentUUID}}' },
+      { key: 'submissionDateFrom', value: SYNTHETIC.submissionDateFrom },
+      { key: 'submissionDateTo', value: SYNTHETIC.submissionDateTo },
+    ]);
+    expect(search.raw).toBe(
+      `${BASE}/api/v1.0/documents/search?uuid={{documentUUID}}&submissionDateFrom=${SYNTHETIC.submissionDateFrom}&submissionDateTo=${SYNTHETIC.submissionDateTo}`,
+    );
   });
 
   it('refuses a non-loopback emulator base URL', () => {

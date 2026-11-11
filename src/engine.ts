@@ -3,7 +3,21 @@ import type { Clock } from './clock.js';
 import { isAdjustableClock } from './clock.js';
 import { MAX_PAGE_SIZE, MAX_REASON_LENGTH } from './constants.js';
 import type { ResolvedConfig, TenantConfig } from './config.js';
-import { inspectDocument, validateNone, type DocumentFormat, type NoneValidation } from './document.js';
+import {
+  inspectDocument,
+  validateNone,
+  type DocumentFormat,
+  type DocumentInspection,
+  type NoneValidation,
+} from './document.js';
+import {
+  documentMatchesQuery,
+  paginate,
+  parseListQuery,
+  querySummary,
+  sortNewestFirst,
+  type QueryDocument,
+} from './document-query.js';
 import { errorBody, invalidDocumentError, precheckFailedError, standardError, type StandardError } from './errors.js';
 import { decodeBase64, hashesEqual, sha256Hex } from './hash.js';
 import { checkLimits, limitMessage } from './limits.js';
@@ -37,6 +51,8 @@ interface StoredDocument {
   supplierTin: string | null;
   buyerTin: string | null;
   submitterTin: string;
+  createdByUserId: string;
+  inspection: DocumentInspection;
   status: DocumentStatus;
   /** null while Submitted. True when validation passed, including after cancel/reject. */
   validationOk: boolean | null;
@@ -443,6 +459,8 @@ export class EmulatorEngine {
         supplierTin: entry.inspection.supplierTin,
         buyerTin: entry.inspection.buyerTin,
         submitterTin: tenant.tin,
+        createdByUserId: tenant.clientId,
+        inspection: entry.inspection,
         status: 'Submitted',
         validationOk: null,
         validationError: null,
@@ -553,6 +571,14 @@ export class EmulatorEngine {
         validationResults: this.validationResults(doc),
       },
     };
+  }
+
+  getRecent(tenant: TenantConfig, params: URLSearchParams): EngineResult {
+    return this.listDocuments(tenant, params, 'recent');
+  }
+
+  searchDocuments(tenant: TenantConfig, params: URLSearchParams): EngineResult {
+    return this.listDocuments(tenant, params, 'search');
   }
 
   changeState(uuid: string, tenant: TenantConfig, body: unknown): EngineResult {
@@ -742,6 +768,52 @@ export class EmulatorEngine {
       if (doc) docs.push(doc);
     }
     return docs;
+  }
+
+  private listDocuments(
+    tenant: TenantConfig,
+    params: URLSearchParams,
+    mode: 'recent' | 'search',
+  ): EngineResult {
+    this.settle();
+    const parsed = parseListQuery(params, mode);
+    if (!parsed.ok) return this.structure(parsed.message, parsed.messageMS, parsed.property);
+    const now = this.clock.now();
+    const matched: QueryDocument[] = [];
+    for (const doc of this.documents.values()) {
+      const queryDoc = this.asQueryDocument(doc);
+      if (documentMatchesQuery(queryDoc, parsed.query, tenant.tin, mode, now)) {
+        matched.push(queryDoc);
+      }
+    }
+    const page = paginate(sortNewestFirst(matched), parsed.query.pageNo, parsed.query.pageSize);
+    return {
+      status: 200,
+      body: {
+        result: page.result.map((doc) => querySummary(doc)),
+        metadata: page.metadata,
+      },
+    };
+  }
+
+  private asQueryDocument(doc: StoredDocument): QueryDocument {
+    return {
+      uuid: doc.uuid,
+      submissionUID: doc.submissionUID,
+      longId: doc.longId,
+      internalId: doc.codeNumber,
+      status: doc.status,
+      supplierTin: doc.supplierTin,
+      buyerTin: doc.buyerTin,
+      submitterTin: doc.submitterTin,
+      receivedAt: doc.receivedAt,
+      dateTimeValidated: doc.dateTimeValidated,
+      cancelAt: doc.cancelAt,
+      rejectAt: doc.rejectAt,
+      statusReason: doc.statusReason,
+      createdByUserId: doc.createdByUserId,
+      inspection: doc.inspection,
+    };
   }
 
   private summary(doc: StoredDocument): Record<string, unknown> {

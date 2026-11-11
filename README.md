@@ -89,6 +89,8 @@ In-scope requests and expected status:
 | Get Submission | 200 | `submissionUID` from submit |
 | Get Document | 200 | raw body for the submitted uuid |
 | Get Document Details | 200 | |
+| Get Recent Documents | 200 | Invalid placeholder filters (`direction`, `status`, paging, …) dropped. A submission date pair, when present, is filled with 2026-01-01 .. 2026-01-31. The public sample's issue date is older than 31 days from the fake clock, so `result` may be empty. |
+| Search Documents | 200 | `submissionDateFrom`/`submissionDateTo` filled with 2026-01-01 .. 2026-01-31 (fake-clock origin). `uuid` is the submitted document. Other placeholder filters dropped. |
 | Cancel Document | 200 | supplier, within the 72-hour window |
 | Reject Document | 400 | Same uuid after Cancel, still the supplier token. Already `Cancelled` → `IncorrectState`. |
 
@@ -100,8 +102,6 @@ Skipped (listed in `reports/contract.txt`, not silent):
 | Get Document Type | Platform document types are not implemented |
 | Get Document Type Version | Platform document types are not implemented |
 | Get Notifications | Platform notifications are not implemented |
-| Get Recent Documents | Not implemented |
-| Search Documents | Not implemented |
 
 The script writes `reports/contract.json` and `reports/contract.txt` (gitignored) and exits nonzero if an assertion fails or an in-scope request is missing from the collection.
 
@@ -121,6 +121,8 @@ To update the pin after LHDN publishes a new collection:
 | GET | `/api/v1.0/documentsubmissions/{uid}?pageNo&pageSize` | bearer | `overallStatus`: `in progress`, `valid`, `partially valid`, or `invalid`. |
 | GET | `/api/v1.0/documents/{uuid}/raw` | bearer | Original document text and hash. |
 | GET | `/api/v1.0/documents/{uuid}/details` | bearer | Status plus `validationResults`. |
+| GET | `/api/v1.0/documents/recent` | bearer | Documents visible to the caller from the last 31 days. `{ result, metadata }`. |
+| GET | `/api/v1.0/documents/search` | bearer | Same summary shape. Requires a submission or issue date range. |
 | PUT | `/api/v1.0/documents/state/{uuid}/state` | bearer | `{ "status": "cancelled" \| "rejected", "reason": "..." }`. |
 | GET | `/api/v1.0/taxpayer/validate/{tin}?idType&idValue` | bearer | `200` empty body, `400` if a query param is missing, `404` otherwise. |
 
@@ -140,6 +142,39 @@ Document and submission ids are 26 characters from `[A-Z0-9]`, produced by a see
 `dateTimeValidated` is the moment the delay elapses (`receivedAt + validationDelayMs`), not the time of a later poll. A fake-clock jump past that moment does not move the 72-hour window forward.
 
 `overallStatus` is `in progress` while any document is still `Submitted`, `valid` when every document passed validation, `invalid` when none did, and `partially valid` otherwise. Cancel and reject do not change it.
+
+### Get recent documents and search documents
+
+`GET /api/v1.0/documents/recent` and `GET /api/v1.0/documents/search` are authenticated like the other document routes. Both return:
+
+```json
+{
+  "result": [ { "uuid": "...", "submissionUID": "...", "status": "Valid" } ],
+  "metadata": { "totalPages": 1, "totalCount": 1 }
+}
+```
+
+Results are newest first (`dateTimeReceived` descending). `pageNo` is 1-based (default 1). `pageSize` defaults to 100 and cannot exceed 100; invalid paging returns `400` `BadStructure`. Matching documents are capped at 10,000 before paging.
+
+Visibility is the caller's tenant:
+
+- **Sent** (issuer): `supplierTIN` matches the token TIN, or the token tenant submitted the document. Any status.
+- **Received** (buyer): `buyerTIN` matches the token TIN, and status is `Valid` or `Cancelled` only.
+- No `direction` / `invoiceDirection`: union of the two. `Sent` and `Received` are the documented values; `direction`, `invoiceDirection`, and `InvoiceDirection` are all accepted.
+
+Date rules follow the LHDN pages (31 days, emulator clock):
+
+- Pair partners are mandatory: `submissionDateFrom` with `submissionDateTo`, `issueDateFrom` with `issueDateTo`. One side alone is `400`.
+- Each pair must be a full ISO-8601 datetime with `Z` or an explicit offset (for example `2026-01-01T00:00:00Z` or `2026-01-01T08:00:00+08:00`). Date-only values (`2026-01-01`) and offset-less datetimes (`2026-01-01T00:00:00`) are `400`. `from <= to`, and at most 31 days apart (`31 * 24 * 60 * 60 * 1000` ms, inclusive).
+- Issued time is UBL `IssueDate`+`IssueTime` (offset-less `IssueTime` is UTC). When `IssueDate` is absent, `dateTimeReceived` is used. That fallback applies to the recent 31-day window and to `issueDateFrom`/`issueDateTo` on both endpoints.
+- **Recent** always restricts to documents issued in the last 31 days (with the fallback above).
+- **Search** requires either the submission pair or the issue pair (or both). It does not apply the rolling 31-day recency window.
+
+Receiver filters (`receiverId`, `receiverIdType`, `receiverTin`) require `direction=Sent`. Issuer filters (`issuerId`, `issuerIdType`, `issuerTin`) require `direction=Received`. `receiverIdType` / `issuerIdType` are required when the matching id is sent (`BRN`, `PASSPORT`, `NRIC`, `ARMY`). `status` is `Valid`, `Invalid`, `Cancelled`, or `Submitted`. `documentType` matches UBL `InvoiceTypeCode` (for example `01`). Search also accepts `uuid`, `searchQuery` (letters, digits, space, `.` `'` `_` `-`; matches uuid, buyer/supplier TIN and name, internal id, total), and `classificationCode` (comma-separated UBL classification codes).
+
+Summary fields the emulator fills from the stored document and UBL when present: `uuid`, `submissionUID`, `longId`, `internalId`, `typeName`, `typeVersionName`, `issuerTin`, `issuerName`, `receiverId`, `receiverName`, `dateTimeIssued`, `dateTimeReceived`, `dateTimeValidated`, `totalSales`, `totalDiscount`, `netAmount`, `total`, `totalExcludingTax` (same as `totalSales`), `totalNetAmount` (same as `netAmount`), `totalPayableAmount` (same as `total`), `status`, `cancelDateTime`, `rejectRequestDateTime`, `documentStatusReason`, `createdByUserId` (submitter `client_id`), `supplierTIN` / `supplierTin`, `supplierName`, `buyerName`, `buyerTIN` / `buyerTin`, `classificationCodeValues`. `submissionChannel` is always `ERP`.
+
+Always `null` (not modelled): `intermediaryName`, `intermediaryTin`, `intermediaryRob`. Amounts, names, ids, type, and issue time are also `null` when the document has no Invoice root or the UBL omits them.
 
 ### Cancel and reject
 
@@ -230,9 +265,9 @@ Default RPM (from the MyInvois integration-practices table). Effective limit is 
 | Cancel / reject document | `PUT /api/v1.0/documents/state/{uuid}/state` | 12 |
 | Get document (raw) | `GET /api/v1.0/documents/{uuid}/raw` | 60 |
 | Get document details | `GET /api/v1.0/documents/{uuid}/details` | 125 |
+| Get recent documents | `GET /api/v1.0/documents/recent` | 12 |
+| Search documents | `GET /api/v1.0/documents/search` | 12 |
 | Validate TIN | `GET /api/v1.0/taxpayer/validate/{tin}` | 60 |
-
-Search documents and get recent documents are not implemented. A reserved default of **12 RPM** would apply if those routes were added.
 
 Over the limit: HTTP `429` with the standard error envelope (`errorCode` `RateLimitExceeded`, English `error` and Malay `errorMS`) plus:
 
@@ -266,7 +301,7 @@ Each rule is:
 
 | Field | Required | Meaning |
 |---|---|---|
-| `endpoint` | yes | One of the rate-limit keys (`token`, `submit`, `getSubmission`, `cancelReject`, `getDocument`, `getDocumentDetails`, `validateTin`) or `*` |
+| `endpoint` | yes | One of the rate-limit keys (`token`, `submit`, `getSubmission`, `cancelReject`, `getDocument`, `getDocumentDetails`, `getRecent`, `search`, `validateTin`) or `*` |
 | `kind` | yes | `error500`, `latency`, `rateLimit429`, or `reset` |
 | `probability` | one of `probability` or `nth` | Inclusive `0..1`. A seeded PRNG decides each matching request |
 | `nth` | one of `probability` or `nth` | Array of 1-based request counts for that endpoint since faults were set or reset |
@@ -417,7 +452,9 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 | `GET /api/v1.0/taxpayer/validate/{tin}?idType&idValue` → 400 / 200 empty / 404 | [Validate Taxpayer TIN](https://sdk.myinvois.hasil.gov.my/einvoicingapi/01-validate-taxpayer-tin/) | No |
 | Standard error object fields, including `errorMS` and `innerError` | [Standard error response](https://sdk.myinvois.hasil.gov.my/standard-error-response/) | No. `errorMS` text is not copied from LHDN. |
 | `correlationId` response header on every response | [Standard header parameters](https://sdk.myinvois.hasil.gov.my/standard-header-parameters/) | No. The header name is the one this spec requires. |
-| Per-endpoint RPM, `429` `RateLimitExceeded`, `Retry-After`, `X-Rate-Limit-*` | [Integration practices](https://sdk.myinvois.hasil.gov.my/integration-practices/) | No. Window is a fixed 60 seconds on the emulator clock. Default RPM numbers follow that page. Search/recent are not implemented; a reserved 12 RPM would apply. |
+| Per-endpoint RPM, `429` `RateLimitExceeded`, `Retry-After`, `X-Rate-Limit-*` | [Integration practices](https://sdk.myinvois.hasil.gov.my/integration-practices/) | No. Window is a fixed 60 seconds on the emulator clock. Default RPM numbers follow that page, including 12 RPM for Get Recent Documents and Search Documents. |
+| `GET /api/v1.0/documents/recent` last 31 days, `{ result, metadata }`, paging | [Get Recent Documents](https://sdk.myinvois.hasil.gov.my/einvoicingapi/05-get-recent-documents/) | No. 31-day window is on issued date (UBL `IssueDate`+`IssueTime`), falling back to `dateTimeReceived` when issue date is absent. The same fallback applies to `issueDateFrom`/`issueDateTo` on recent and search. `pageSize` max 100 is taken from Search Documents. `direction` / `InvoiceDirection` / `invoiceDirection` are accepted. |
+| `GET /api/v1.0/documents/search` requires a submission or issue date pair, max 31-day span | [Search Documents](https://sdk.myinvois.hasil.gov.my/einvoicingapi/09-search-documents/) | No. Span is 31 days as that page states (the product spec mentioned 30 as an example). `searchQuery` character class is local. Date query params require a full ISO-8601 datetime with `Z` or an explicit offset. |
 | Ids are 26 characters of `[A-Z0-9]` | Submit / get-submission samples on the SDK site | No. The generator is a seeded PRNG, not an LHDN id format proof. |
 | Default validator only checks an Invoice root | Local. The SDK's real rules are much larger. | No. By design this is not the LHDN rule set. `--validator precheck` shells out to myinvois-precheck when you supply it. |
 
@@ -432,7 +469,6 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 Not in this increment:
 
 - Intermediary login and the `onbehalfof` header
-- `GET /api/v1.0/documents/recent` and `/documents/search`
 - Dockerfile
 - `--record` / `--replay` JSONL
 - Platform APIs (`/api/v1.0/documenttypes`, notifications) and a read-only status page

@@ -21,6 +21,9 @@ export const SYNTHETIC = {
   idValue: '201901000001',
   codeNumber: 'INV-CONTRACT-1',
   format: 'JSON',
+  /** Covers the fake-clock origin used by `npm run contract` (2026-01-01). */
+  submissionDateFrom: '2026-01-01T00:00:00Z',
+  submissionDateTo: '2026-01-31T23:59:59Z',
 };
 
 /**
@@ -42,6 +45,8 @@ export const IN_SCOPE = [
   { name: 'Get Submission', expectedStatus: 200 },
   { name: 'Get Document', expectedStatus: 200 },
   { name: 'Get Document Details', expectedStatus: 200 },
+  { name: 'Get Recent Documents', expectedStatus: 200 },
+  { name: 'Search Documents', expectedStatus: 200 },
   { name: 'Cancel Document', expectedStatus: 200 },
   {
     name: 'Reject Document',
@@ -66,14 +71,6 @@ export const SKIPPED = [
   {
     name: 'Get Notifications',
     reason: 'Platform notifications are not implemented by the emulator',
-  },
-  {
-    name: 'Get Recent Documents',
-    reason: 'Get Recent Documents is not implemented by the emulator',
-  },
-  {
-    name: 'Search Documents',
-    reason: 'Search Documents is not implemented by the emulator',
   },
 ];
 
@@ -160,6 +157,8 @@ export function transformCollection(collection, options) {
       tin: options.tin ?? SYNTHETIC.tin,
       idType: options.idType ?? SYNTHETIC.idType,
       idValue: options.idValue ?? SYNTHETIC.idValue,
+      submissionDateFrom: SYNTHETIC.submissionDateFrom,
+      submissionDateTo: SYNTHETIC.submissionDateTo,
     },
   };
 
@@ -233,6 +232,9 @@ function transformRequestItem(item, spec, options, fills) {
         : {};
   item.request = request;
   request.url = transformUrl(request.url, options.baseUrl, fills);
+  if (spec.name === 'Get Recent Documents' || spec.name === 'Search Documents') {
+    request.url = sanitizeListQuery(request.url, spec.name, fills);
+  }
 
   if (spec.name === 'Login as Taxpayer System') {
     fillLoginBody(
@@ -345,6 +347,59 @@ function clockAdvanceItem(baseUrl) {
     },
     event: [statusTestEvent(200)],
   };
+}
+
+function isUnfilledPlaceholder(value) {
+  return typeof value === 'string' && /^\{[^{}]+\}$/.test(value);
+}
+
+function queryHas(query, key) {
+  return query.some((entry) => entry.key === key && entry.disabled !== true);
+}
+
+/**
+ * Official recent/search requests ship every filter as `{placeholder}`.
+ * Keep params we can fill with synthetic values; drop the rest so the
+ * emulator does not 400 on invalid direction/status/uuid placeholders.
+ */
+function sanitizeListQuery(url, name, fills) {
+  const parsed = url && typeof url === 'object' ? { ...url } : { raw: '' };
+  const query = Array.isArray(parsed.query) ? parsed.query.map((entry) => ({ ...entry })) : [];
+  const kept = [];
+  for (const entry of query) {
+    let value = entry.value;
+    if (name === 'Search Documents' && entry.key === 'uuid' && isUnfilledPlaceholder(value)) {
+      value = fills.documentVar;
+    }
+    if (
+      name === 'Search Documents' &&
+      (entry.key === 'submissionDateFrom' || entry.key === 'submissionDateTo') &&
+      isUnfilledPlaceholder(value)
+    ) {
+      value = fills.brace[entry.key];
+    }
+    if (isUnfilledPlaceholder(value)) continue;
+    kept.push({ ...entry, value });
+  }
+  if (name === 'Search Documents') {
+    if (!queryHas(kept, 'submissionDateFrom')) {
+      kept.push({ key: 'submissionDateFrom', value: SYNTHETIC.submissionDateFrom });
+    }
+    if (!queryHas(kept, 'submissionDateTo')) {
+      kept.push({ key: 'submissionDateTo', value: SYNTHETIC.submissionDateTo });
+    }
+  }
+  parsed.query = kept;
+  const path = Array.isArray(parsed.path) ? parsed.path : [];
+  const pathPart = path.length > 0 ? `/${path.join('/')}` : '/';
+  const enabled = kept.filter((entry) => entry.disabled !== true);
+  const qs =
+    enabled.length > 0 ? `?${enabled.map((entry) => `${entry.key}=${entry.value ?? ''}`).join('&')}` : '';
+  const raw = typeof parsed.raw === 'string' ? parsed.raw : '';
+  const originMatch = /^(https?:\/\/[^/]+)/.exec(raw);
+  const origin = originMatch?.[1] ?? '';
+  parsed.raw = `${origin}${pathPart}${qs}`;
+  return parsed;
 }
 
 function fillExactBrace(value, brace) {

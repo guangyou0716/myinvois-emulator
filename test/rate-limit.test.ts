@@ -36,8 +36,17 @@ describe('resolveRateLimit', () => {
     expect(resolveRateLimit({ scale: 0.5 }).rpm.token).toBe(6);
     expect(resolveRateLimit({ scale: 0.5 }).rpm.submit).toBe(50);
     expect(resolveRateLimit({ scale: 0.5 }).rpm.getDocumentDetails).toBe(62);
+    expect(resolveRateLimit({ scale: 0.5 }).rpm.getRecent).toBe(6);
+    expect(resolveRateLimit({ scale: 0.5 }).rpm.search).toBe(6);
     expect(resolveRateLimit({ scale: 0.01 }).rpm.token).toBe(1);
     expect(resolveRateLimit({ rpm: { token: 3 }, scale: 2 }).rpm.token).toBe(6);
+  });
+
+  it('includes getRecent and search at 12 RPM by default', () => {
+    expect(DEFAULT_RPM.getRecent).toBe(12);
+    expect(DEFAULT_RPM.search).toBe(12);
+    expect(resolveRateLimit({}).rpm.getRecent).toBe(12);
+    expect(resolveRateLimit({}).rpm.search).toBe(12);
   });
 
   it('rejects a non-positive or non-finite scale', () => {
