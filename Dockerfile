@@ -1,8 +1,9 @@
 # Local-only image for the offline MyInvois emulator. Build it yourself; no image is published.
-# Base pinned by digest (node:20-alpine multi-arch index, resolved 2026-11-11).
-ARG NODE_IMAGE=node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+# Base pinned by digest (node:20-alpine multi-arch index, resolved 2026-11-11). The literal FROM line
+# (not an ARG) lets Dependabot propose digest bumps; both stages build on it.
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS base
 
-FROM ${NODE_IMAGE} AS build
+FROM base AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
@@ -10,7 +11,7 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build
 
-FROM ${NODE_IMAGE}
+FROM base
 ENV NODE_ENV=production
 WORKDIR /app
 # Zero runtime dependencies: the compiled CLI, package.json (for --version) and the fixtures are enough.

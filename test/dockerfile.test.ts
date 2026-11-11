@@ -9,10 +9,21 @@ describe('Dockerfile', () => {
   const ignore = read('../.dockerignore').split('\n').map((line) => line.trim());
 
   it('pins the node:20-alpine base by digest', () => {
-    expect(dockerfile).toMatch(/^ARG NODE_IMAGE=node:20-alpine@sha256:[0-9a-f]{64}$/m);
     const froms = dockerfile.split('\n').filter((line) => line.startsWith('FROM '));
-    expect(froms).toHaveLength(2);
-    for (const line of froms) expect(line).toContain('${NODE_IMAGE}');
+    expect(froms).toEqual([
+      expect.stringMatching(/^FROM node:20-alpine@sha256:[0-9a-f]{64} AS base$/),
+      'FROM base AS build',
+      'FROM base',
+    ]);
+    // A literal FROM (no ARG indirection) is what Dependabot's docker ecosystem can update.
+    expect(dockerfile).not.toMatch(/^ARG /m);
+  });
+
+  it('has Dependabot watching the base image, npm and the pinned actions', () => {
+    const dependabot = read('../.github/dependabot.yml');
+    for (const ecosystem of ['docker', 'npm', 'github-actions']) {
+      expect(dependabot).toContain(`package-ecosystem: ${ecosystem}`);
+    }
   });
 
   it('runs the compiled CLI as the unprivileged node user on all interfaces', () => {
