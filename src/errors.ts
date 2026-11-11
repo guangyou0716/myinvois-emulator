@@ -32,6 +32,18 @@ export function errorBody(error: StandardError): { error: StandardError } {
   return { error };
 }
 
+function validationError(innerError: StandardError[]): StandardError {
+  return standardError({
+    propertyName: null,
+    propertyPath: null,
+    errorCode: 'ValidationError',
+    error: 'Document failed structural validation',
+    errorMS: 'Dokumen gagal pengesahan struktur',
+    target: 'Document',
+    innerError,
+  });
+}
+
 export function invalidDocumentError(): StandardError {
   const inner = standardError({
     propertyName: 'Invoice',
@@ -42,13 +54,39 @@ export function invalidDocumentError(): StandardError {
     target: 'Invoice',
     innerError: null,
   });
-  return standardError({
+  return validationError([inner]);
+}
+
+export function precheckFailedError(reason: string): StandardError {
+  const inner = standardError({
     propertyName: null,
     propertyPath: null,
-    errorCode: 'ValidationError',
-    error: 'Document failed structural validation',
-    errorMS: 'Dokumen gagal pengesahan struktur',
-    target: 'Document',
-    innerError: [inner],
+    errorCode: 'PrecheckFailed',
+    error: reason,
+    errorMS: 'Prapemeriksaan gagal',
+    target: 'Precheck',
+    innerError: null,
   });
+  return validationError([inner]);
+}
+
+export interface PrecheckFindingError {
+  rule: string;
+  message: string;
+  path: string;
+}
+
+export function precheckFindingsError(findings: PrecheckFindingError[]): StandardError {
+  const inner = findings.map((finding) =>
+    standardError({
+      propertyName: finding.path,
+      propertyPath: finding.path,
+      errorCode: finding.rule,
+      error: finding.message,
+      errorMS: finding.message,
+      target: finding.rule,
+      innerError: null,
+    }),
+  );
+  return validationError(inner);
 }

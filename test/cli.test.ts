@@ -31,6 +31,8 @@ describe('cli arguments', () => {
       rateLimitEnabled: true,
       rpmScale: 1,
       faultsPath: null,
+      validator: 'none',
+      precheckCommand: null,
     });
   });
 
@@ -64,6 +66,8 @@ describe('cli arguments', () => {
       rateLimitEnabled: false,
       rpmScale: 0.5,
       faultsPath: 'fixtures/faults/500-storm.json',
+      validator: 'none',
+      precheckCommand: null,
     });
   });
 
@@ -104,6 +108,8 @@ describe('cli arguments', () => {
     expect(help.out).toContain('--rpm-scale');
     expect(help.out).toContain('--no-rate-limit');
     expect(help.out).toContain('--faults');
+    expect(help.out).toContain('--validator');
+    expect(help.out).toContain('--precheck-cmd');
     expect(help.out).toContain('127.0.0.1');
     const version = io();
     expect(await run(['--version'], version)).toBe(0);
@@ -142,5 +148,46 @@ describe('cli arguments', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('parses --validator precheck and a quoted --precheck-cmd', () => {
+    expect(
+      parseArgs(['start', '--validator', 'precheck', '--precheck-cmd', "node '/path with spaces/cli.js' --json"]),
+    ).toMatchObject({
+      mode: 'start',
+      validator: 'precheck',
+      precheckCommand: ['node', '/path with spaces/cli.js', '--json'],
+    });
+    expect(parseArgs(['start', '--validator', 'none'])).toMatchObject({
+      mode: 'start',
+      validator: 'none',
+      precheckCommand: null,
+    });
+  });
+
+  it('rejects missing, empty, or unmatched --precheck-cmd with precheck', async () => {
+    expect(parseArgs(['start', '--validator', 'precheck'])).toEqual({
+      mode: 'error',
+      message: '--precheck-cmd is required when --validator precheck',
+    });
+    expect(parseArgs(['start', '--validator', 'precheck', '--precheck-cmd', '   '])).toEqual({
+      mode: 'error',
+      message: '--precheck-cmd requires a non-empty command',
+    });
+    expect(parseArgs(['start', '--validator', 'precheck', '--precheck-cmd', "node 'oops"])).toMatchObject({
+      mode: 'error',
+    });
+    expect(parseArgs(['start', '--precheck-cmd', 'node cli.js'])).toEqual({
+      mode: 'error',
+      message: '--precheck-cmd requires --validator precheck',
+    });
+    expect(parseArgs(['start', '--validator', 'other'])).toEqual({
+      mode: 'error',
+      message: '--validator must be none or precheck',
+    });
+
+    const streams = io();
+    expect(await run(['start', '--validator', 'precheck'], streams)).toBe(2);
+    expect(streams.err).toContain('--precheck-cmd');
   });
 });

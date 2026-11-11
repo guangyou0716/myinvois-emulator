@@ -26,22 +26,34 @@ export type {
   TransitionInput,
   TransitionResult,
 } from './state-machine.js';
-export { errorBody, invalidDocumentError, standardError } from './errors.js';
-export type { StandardError } from './errors.js';
+export {
+  errorBody,
+  invalidDocumentError,
+  precheckFailedError,
+  precheckFindingsError,
+  standardError,
+} from './errors.js';
+export type { PrecheckFindingError, StandardError } from './errors.js';
 export { FaultError, loadFaultsFile, parseFaults } from './faults.js';
 export type { FaultAction, FaultEndpoint, FaultKind, FaultRule } from './faults.js';
 export { defaultConfig, DEFAULT_TENANTS } from './defaults.js';
 export { loadConfigFile, parseConfig, resolveConfig, ConfigError } from './config.js';
 export type { EmulatorConfig, ResolvedConfig, TenantConfig, TenantRole } from './config.js';
 export { inspectDocument, validateNone, xmlRootLocalName } from './document.js';
+export type { DocumentFormat, DocumentInspection, NoneValidation } from './document.js';
+export { resolveValidator, splitCommand, ValidatorError } from './validator.js';
+export type { ResolvedValidator, ValidatorOption } from './validator.js';
 export {
   CANCEL_WINDOW_MS,
+  DEFAULT_PRECHECK_TIMEOUT_MS,
   DEFAULT_TOKEN_TTL_SECONDS,
   DEFAULT_VALIDATION_DELAY_MS,
   DOC_MAX_BYTES,
   DOC_MAX_COUNT,
   DUPLICATE_WINDOW_MS,
   ID_LENGTH,
+  PRECHECK_CONCURRENCY,
+  PRECHECK_MAX_STDOUT_BYTES,
   RATE_LIMIT_WINDOW_MS,
   SUBMISSION_MAX_BYTES,
 } from './constants.js';

@@ -23,3 +23,10 @@ export const FAKE_CLOCK_START_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
 export const MAX_BODY_BYTES = 16 * 1024 * 1024;
 export const MAX_REASON_LENGTH = 300;
 export const MAX_PAGE_SIZE = 100;
+
+/** Default wall-clock timeout for a precheck child process. */
+export const DEFAULT_PRECHECK_TIMEOUT_MS = 10_000;
+/** Kill a precheck child if stdout exceeds this many bytes. */
+export const PRECHECK_MAX_STDOUT_BYTES = 4 * 1024 * 1024;
+/** Cap concurrent precheck children; further runs wait in a queue. */
+export const PRECHECK_CONCURRENCY = 4;

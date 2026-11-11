@@ -6,6 +6,8 @@ import { EmulatorEngine, type EngineResult } from './engine.js';
 import { errorBody, standardError } from './errors.js';
 import { FaultError, FaultInjector, parseFaults, type FaultAction, type FaultRule } from './faults.js';
 import { createIdGenerator } from './ids.js';
+import { PrecheckRunner, type PrecheckIo } from './precheck.js';
+import { resolveValidator, type ValidatorOption } from './validator.js';
 import {
   RATE_LIMIT_UNAUTHENTICATED,
   RateLimiter,
@@ -29,6 +31,13 @@ export interface EmulatorOptions {
   rateLimit?: RateLimitOptions;
   /** Deterministic fault rules. `/_emulator/*` is never faulted. */
   faults?: FaultRule[];
+  /**
+   * Document validator. Default `none` (Invoice root only). `precheck` shells
+   * out to a user-supplied myinvois-precheck CLI; it is not an npm dependency.
+   */
+  validator?: ValidatorOption;
+  /** Overrides precheck temp-file IO. Tests use this to force mkdtemp or cleanup failures. */
+  precheckIo?: Partial<PrecheckIo>;
   /** Called when a request handler throws. */
   onError?(error: unknown): void;
 }
@@ -180,6 +189,8 @@ class EmulatorServer implements Emulator {
     this.config = resolveConfig(options.config);
     this.rateLimiter = new RateLimiter(this.clock, resolveRateLimit(options.rateLimit));
     this.faults = new FaultInjector(seed, parseFaults(options.faults ?? [], 'faults'));
+    const validator = resolveValidator(options.validator);
+    const precheck = validator.kind === 'precheck' ? new PrecheckRunner(validator, options.precheckIo) : null;
     this.engine = new EmulatorEngine(
       this.config,
       this.clock,
@@ -187,6 +198,8 @@ class EmulatorServer implements Emulator {
       seed,
       clockMode,
       this.rateLimiter,
+      validator,
+      precheck,
     );
     this.correlationIds = createIdGenerator(seed ^ 0x9e3779b9);
     this.preferredHost = options.host ?? '127.0.0.1';
@@ -238,6 +251,7 @@ class EmulatorServer implements Emulator {
   async stop(): Promise<void> {
     this.closed = true;
     this.cancelDelays();
+    this.engine.close();
     if (!this.listening) return;
     this.listening = false;
     this.http.closeAllConnections();

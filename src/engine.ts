@@ -3,13 +3,15 @@ import type { Clock } from './clock.js';
 import { isAdjustableClock } from './clock.js';
 import { MAX_PAGE_SIZE, MAX_REASON_LENGTH } from './constants.js';
 import type { ResolvedConfig, TenantConfig } from './config.js';
-import { inspectDocument, validateNone, type DocumentFormat } from './document.js';
-import { errorBody, standardError, type StandardError } from './errors.js';
+import { inspectDocument, validateNone, type DocumentFormat, type NoneValidation } from './document.js';
+import { errorBody, invalidDocumentError, precheckFailedError, standardError, type StandardError } from './errors.js';
 import { decodeBase64, hashesEqual, sha256Hex } from './hash.js';
 import { checkLimits, limitMessage } from './limits.js';
 import { duplicateDecision } from './duplicate.js';
+import { PrecheckRunner } from './precheck.js';
 import type { RateLimiter } from './rate-limit.js';
 import { decideTransition, overallStatus, type DocumentStatus } from './state-machine.js';
+import type { ResolvedValidator } from './validator.js';
 
 export interface EngineResult {
   status: number;
@@ -46,6 +48,11 @@ interface StoredDocument {
   cancelAt: number | null;
   rejectAt: number | null;
   statusReason: string | null;
+  /**
+   * Precheck result captured during submit. `pending` while the child is still
+   * running; `undefined` means the `none` validator (settle calls validateNone).
+   */
+  storedValidation: NoneValidation | 'pending' | undefined;
 }
 
 interface StoredSubmission {
@@ -108,7 +115,13 @@ export class EmulatorEngine {
     private readonly seed: number,
     private readonly clockMode: 'fake' | 'real',
     private readonly rateLimiter: RateLimiter,
+    private readonly validator: ResolvedValidator,
+    private readonly precheck: PrecheckRunner | null,
   ) {}
+
+  close(): void {
+    this.precheck?.close();
+  }
 
   health(): EngineResult {
     this.settle();
@@ -289,7 +302,7 @@ export class EmulatorEngine {
     };
   }
 
-  submit(rawBody: Buffer, tenant: TenantConfig): EngineResult {
+  async submit(rawBody: Buffer, tenant: TenantConfig): Promise<EngineResult> {
     this.settle();
     const now = this.clock.now();
     const bodyHash = sha256Hex(rawBody);
@@ -416,10 +429,11 @@ export class EmulatorEngine {
 
     const submissionUID = this.ids();
     const documentUuids: string[] = [];
+    const stored: StoredDocument[] = [];
     for (const entry of prepared) {
       const uuid = this.ids();
       documentUuids.push(uuid);
-      this.documents.set(uuid, {
+      const doc: StoredDocument = {
         uuid,
         submissionUID,
         codeNumber: entry.item.codeNumber,
@@ -439,7 +453,10 @@ export class EmulatorEngine {
         cancelAt: null,
         rejectAt: null,
         statusReason: null,
-      });
+        storedValidation: this.validator.kind === 'precheck' ? 'pending' : undefined,
+      };
+      stored.push(doc);
+      this.documents.set(uuid, doc);
     }
     this.submissions.set(submissionUID, {
       submissionUID,
@@ -448,6 +465,29 @@ export class EmulatorEngine {
       bodyHash,
     });
     this.acceptedBodies.set(bodyHash, now);
+
+    const runner = this.precheck;
+    if (this.validator.kind === 'precheck' && runner) {
+      await Promise.all(
+        stored.map(async (doc, index) => {
+          const entry = prepared[index];
+          if (!entry) {
+            doc.storedValidation = { ok: false, error: invalidDocumentError() };
+            return;
+          }
+          if (!entry.inspection.invoiceRoot) {
+            doc.storedValidation = { ok: false, error: invalidDocumentError() };
+            return;
+          }
+          try {
+            doc.storedValidation = await runner.run(doc.format, doc.bytes);
+          } catch {
+            doc.storedValidation = { ok: false, error: precheckFailedError('precheck failed to start') };
+          }
+        }),
+      );
+    }
+
     this.settle();
     return {
       status: 202,
@@ -645,7 +685,8 @@ export class EmulatorEngine {
     const now = this.clock.now();
     for (const doc of this.documents.values()) {
       if (doc.status !== 'Submitted' || now < doc.validationDueAt) continue;
-      const outcome = validateNone(doc.format, doc.bytes);
+      if (doc.storedValidation === 'pending') continue;
+      const outcome = doc.storedValidation ?? validateNone(doc.format, doc.bytes);
       if (outcome.ok) {
         doc.status = 'Valid';
         doc.validationOk = true;

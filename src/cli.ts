@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfigFile, type EmulatorConfig } from './config.js';
 import { createEmulator } from './emulator.js';
 import { loadFaultsFile, type FaultRule } from './faults.js';
+import { splitCommand, ValidatorError, type ValidatorOption } from './validator.js';
 
 export interface CliIo {
   stdout(text: string): void;
@@ -11,7 +12,7 @@ export interface CliIo {
 }
 
 const USAGE =
-  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit] [--faults faults.json]';
+  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit] [--faults faults.json] [--validator none|precheck] [--precheck-cmd "<cmd>"]';
 
 const HELP = `${USAGE}
 
@@ -29,6 +30,8 @@ Options:
   --rpm-scale Multiply per-endpoint RPM (floor, minimum 1). Default 1
   --no-rate-limit Disable per-endpoint rate limits
   --faults    JSON file of fault rules (array or {"faults": [...]}). Default none
+  --validator none (Invoice root only) or precheck (shell out to myinvois-precheck). Default none
+  --precheck-cmd  Command to run for --validator precheck, e.g. "node dist/cli.js --json". Required when precheck
   --help      Show this help
   --version   Print the package version
 
@@ -49,6 +52,8 @@ type Parsed =
       rateLimitEnabled: boolean;
       rpmScale: number;
       faultsPath: string | null;
+      validator: 'none' | 'precheck';
+      precheckCommand: string[] | null;
     };
 
 function packageVersion(): string {
@@ -83,6 +88,8 @@ export function parseArgs(argv: string[]): Parsed {
   let rateLimitEnabled = true;
   let rpmScale = 1;
   let faultsPath: string | null = null;
+  let validator: 'none' | 'precheck' = 'none';
+  let precheckCmd: string | null = null;
 
   try {
     for (let index = 0; index < argv.length; index += 1) {
@@ -144,6 +151,20 @@ export function parseArgs(argv: string[]): Parsed {
         index += 1;
         continue;
       }
+      if (arg === '--validator') {
+        const raw = takeValue(argv, index, '--validator');
+        if (raw !== 'none' && raw !== 'precheck') {
+          return { mode: 'error', message: '--validator must be none or precheck' };
+        }
+        validator = raw;
+        index += 1;
+        continue;
+      }
+      if (arg === '--precheck-cmd') {
+        precheckCmd = takeValue(argv, index, '--precheck-cmd');
+        index += 1;
+        continue;
+      }
       if (arg.startsWith('--')) return { mode: 'error', message: `Unknown option: ${arg}` };
       return { mode: 'error', message: `Unexpected argument: ${arg}` };
     }
@@ -152,7 +173,41 @@ export function parseArgs(argv: string[]): Parsed {
   }
 
   if (command !== 'start') return { mode: 'error', message: 'Missing command: start' };
-  return { mode: 'start', port, host, seed, clock, configPath, rateLimitEnabled, rpmScale, faultsPath };
+
+  let precheckCommand: string[] | null = null;
+  if (validator === 'precheck') {
+    if (precheckCmd === null) {
+      return { mode: 'error', message: '--precheck-cmd is required when --validator precheck' };
+    }
+    if (precheckCmd.trim() === '') {
+      return { mode: 'error', message: '--precheck-cmd requires a non-empty command' };
+    }
+    try {
+      precheckCommand = splitCommand(precheckCmd);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      return { mode: 'error', message: detail.replace('precheck command', '--precheck-cmd') };
+    }
+    if (precheckCommand.length === 0) {
+      return { mode: 'error', message: '--precheck-cmd must contain a command' };
+    }
+  } else if (precheckCmd !== null) {
+    return { mode: 'error', message: '--precheck-cmd requires --validator precheck' };
+  }
+
+  return {
+    mode: 'start',
+    port,
+    host,
+    seed,
+    clock,
+    configPath,
+    rateLimitEnabled,
+    rpmScale,
+    faultsPath,
+    validator,
+    precheckCommand,
+  };
 }
 
 export async function run(argv: string[], io: CliIo): Promise<number> {
@@ -190,22 +245,35 @@ export async function run(argv: string[], io: CliIo): Promise<number> {
     }
   }
 
-  const emulator = createEmulator({
-    seed: parsed.seed,
-    clock: parsed.clock,
-    host: parsed.host,
-    port: parsed.port,
-    config,
-    faults,
-    rateLimit: {
-      enabled: parsed.rateLimitEnabled,
-      scale: parsed.rpmScale,
-    },
-    onError(error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      io.stderr(`request failed: ${detail}\n`);
-    },
-  });
+  const validator: ValidatorOption =
+    parsed.validator === 'precheck' && parsed.precheckCommand
+      ? { kind: 'precheck', command: parsed.precheckCommand }
+      : 'none';
+
+  let emulator: ReturnType<typeof createEmulator>;
+  try {
+    emulator = createEmulator({
+      seed: parsed.seed,
+      clock: parsed.clock,
+      host: parsed.host,
+      port: parsed.port,
+      config,
+      faults,
+      validator,
+      rateLimit: {
+        enabled: parsed.rateLimitEnabled,
+        scale: parsed.rpmScale,
+      },
+      onError(error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        io.stderr(`request failed: ${detail}\n`);
+      },
+    });
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    io.stderr(`${detail}\n`);
+    return cause instanceof ValidatorError ? 2 : 1;
+  }
 
   try {
     const info = await emulator.start({ port: parsed.port, host: parsed.host });
