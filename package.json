@@ -28,7 +28,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9",
-    "@types/node": "^20",
+    "@types/node": "^26",
     "eslint": "^9",
     "globals": "^16",
     "newman": "^6.2.3",
