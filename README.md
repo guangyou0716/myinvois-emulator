@@ -83,7 +83,7 @@ In-scope requests and expected status:
 | Request | Expected | Notes |
 |---|---|---|
 | Login as Taxpayer System | 200 | `sample-supplier` / `sample-supplier-secret` |
-| Login as Intermediary System | 200 | The emulator does not implement `onbehalfof`; the header is ignored and a token is issued for `intermediary-a`. The taxpayer token is kept for later calls. |
+| Login as Intermediary System | 200 | `intermediary-a`. The collection's sample `onbehalfof` value is replaced with `C00000000000`, which that intermediary is authorized to represent. The taxpayer token is kept for later calls. |
 | Validate taxpayer TIN | 200 | Known fake TIN `C00000000000` + `BRN` / `201901000001` |
 | Submit Documents | 202 | Public `1.1-Invoice-Sample.json` |
 | Get Submission | 200 | `submissionUID` from submit |
@@ -116,7 +116,7 @@ To update the pin after LHDN publishes a new collection:
 
 | Method | Path | Auth | What it does |
 |---|---|---|---|
-| POST | `/connect/token` | no | `application/x-www-form-urlencoded` client credentials. Returns `access_token`, `token_type: Bearer`, `expires_in` (3600). |
+| POST | `/connect/token` | no | `application/x-www-form-urlencoded` client credentials. Returns `access_token`, `token_type: Bearer`, `expires_in` (3600). An intermediary adds the `onbehalfof` header (see Intermediary login). |
 | POST | `/api/v1.0/documentsubmissions/` | bearer | Submit `documents[]`. Trailing slash optional. `202` with `submissionUID`, `acceptedDocuments`, `rejectedDocuments`. |
 | GET | `/api/v1.0/documentsubmissions/{uid}?pageNo&pageSize` | bearer | `overallStatus`: `in progress`, `valid`, `partially valid`, or `invalid`. |
 | GET | `/api/v1.0/documents/{uuid}/raw` | bearer | Original document text and hash. |
@@ -129,6 +129,15 @@ To update the pin after LHDN publishes a new collection:
 Every response, including errors and the empty `200`, carries a `correlationId` header (26 characters, `[A-Z0-9]`). Limited API responses also carry `X-Rate-Limit-*` headers (see Rate limiting).
 
 Document and submission ids are 26 characters from `[A-Z0-9]`, produced by a seeded PRNG. The same seed and the same sequence of token and submit calls yield the same ids.
+
+### Intermediary login
+
+An `intermediary` tenant logs in with the extra header `onbehalfof: <TIN>` or `onbehalfof: <TIN>:<ROB>`, as on the [Login as Intermediary System](https://sdk.myinvois.hasil.gov.my/api/08-login-as-intermediary-system/) page. Its `representedTins` list is the authorization table: the header must equal one entry exactly (a `TIN:ROB` entry does not accept the bare TIN, and the reverse). The built-in `intermediary-a` may represent `Supplier's TIN` and `C00000000000`, but not `C00000000001`.
+
+- An authorized token acts as the represented taxpayer for every API call: submit (the supplier TIN must be the represented TIN, else `403 IncorrectSubmitter`), get, recent, search, cancel and reject. Documents it submits record `createdByUserId` = the intermediary `client_id` and fill `intermediaryTin`, `intermediaryName` and `intermediaryRob` (the intermediary's BRN when its `idType` is `BRN`).
+- An unauthorized or unknown `onbehalfof` value depends on `intermediaryDenial`. With `api` (default) the token is issued and every API call with it returns `403 IncorrectSubmitter`. With `token` the login itself returns that error.
+- `onbehalfof` from a supplier or buyer client, or an empty value, returns `400 invalid_request`.
+- An intermediary without the header logs in as itself (its own TIN), with the intermediary fields left `null`.
 
 ### Submit rules
 
@@ -172,9 +181,9 @@ Date rules follow the LHDN pages (31 days, emulator clock):
 
 Receiver filters (`receiverId`, `receiverIdType`, `receiverTin`) require `direction=Sent`. Issuer filters (`issuerId`, `issuerIdType`, `issuerTin`) require `direction=Received`. `receiverIdType` / `issuerIdType` are required when the matching id is sent (`BRN`, `PASSPORT`, `NRIC`, `ARMY`). `status` is `Valid`, `Invalid`, `Cancelled`, or `Submitted`. `documentType` matches UBL `InvoiceTypeCode` (for example `01`). Search also accepts `uuid`, `searchQuery` (letters, digits, space, `.` `'` `_` `-`; matches uuid, buyer/supplier TIN and name, internal id, total), and `classificationCode` (comma-separated UBL classification codes).
 
-Summary fields the emulator fills from the stored document and UBL when present: `uuid`, `submissionUID`, `longId`, `internalId`, `typeName`, `typeVersionName`, `issuerTin`, `issuerName`, `receiverId`, `receiverName`, `dateTimeIssued`, `dateTimeReceived`, `dateTimeValidated`, `totalSales`, `totalDiscount`, `netAmount`, `total`, `totalExcludingTax` (same as `totalSales`), `totalNetAmount` (same as `netAmount`), `totalPayableAmount` (same as `total`), `status`, `cancelDateTime`, `rejectRequestDateTime`, `documentStatusReason`, `createdByUserId` (submitter `client_id`), `supplierTIN` / `supplierTin`, `supplierName`, `buyerName`, `buyerTIN` / `buyerTin`, `classificationCodeValues`. `submissionChannel` is always `ERP`.
+Summary fields the emulator fills from the stored document and UBL when present: `uuid`, `submissionUID`, `longId`, `internalId`, `typeName`, `typeVersionName`, `issuerTin`, `issuerName`, `receiverId`, `receiverName`, `dateTimeIssued`, `dateTimeReceived`, `dateTimeValidated`, `totalSales`, `totalDiscount`, `netAmount`, `total`, `totalExcludingTax` (same as `totalSales`), `totalNetAmount` (same as `netAmount`), `totalPayableAmount` (same as `total`), `status`, `cancelDateTime`, `rejectRequestDateTime`, `documentStatusReason`, `createdByUserId` (submitter `client_id`; the intermediary's for an intermediary login), `supplierTIN` / `supplierTin`, `supplierName`, `buyerName`, `buyerTIN` / `buyerTin`, `classificationCodeValues`. `submissionChannel` is always `ERP`.
 
-Always `null` (not modelled): `intermediaryName`, `intermediaryTin`, `intermediaryRob`. Amounts, names, ids, type, and issue time are also `null` when the document has no Invoice root or the UBL omits them.
+`intermediaryName`, `intermediaryTin` and `intermediaryRob` are filled only for documents submitted through an intermediary login; otherwise `null`. Amounts, names, ids, type, and issue time are also `null` when the document has no Invoice root or the UBL omits them.
 
 ### Cancel and reject
 
@@ -375,6 +384,7 @@ No bearer token. They are how tests move time without sleeping.
   "duplicateWindowMs": 600000,
   "cancelWindowMs": 259200000,
   "tokenTtlSeconds": 3600,
+  "intermediaryDenial": "api",
   "errorCodes": {
     "operationPeriodOver": "OperationPeriodOver",
     "incorrectState": "IncorrectState",
@@ -427,6 +437,8 @@ Built-in tenants (also listed in `fixtures/tenants.json`):
 | `EI00000000010` | buyer | `buyer-general` | `buyer-general-secret` | BRN | `NA` |
 | `EI00000000020` | intermediary | `intermediary-a` | `intermediary-a-secret` | BRN | `202101000001` |
 
+`intermediary-a` has `"representedTins": ["Supplier's TIN", "C00000000000"]`. `representedTins` is allowed only on `intermediary` tenants. Each entry is `TIN` or `TIN:ROB`, must name another configured tenant, and may not repeat.
+
 `Supplier's TIN` and `Buyer's TIN` are the placeholder strings in the public LHDN samples, so those files can be submitted unchanged. `EI00000000010` is the buyer TIN in the public consolidated samples. None of these are real taxpayers. Placeholder token parameters (`""`, `0`, anything starting with `YOUR_`, such as `YOUR_CLIENT_ID`) are rejected with `400` before the tenant table is consulted, so do not use them as a configured client id or secret.
 
 Token lifetime is `tokenTtlSeconds` (default 3600). A token is expired when `now >= issuedAt + ttl`. `expires_in` in the token response is that same value in seconds. Advancing the fake clock past that lifetime expires tokens already issued; take a new one before a 72-hour cancel.
@@ -443,6 +455,7 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 | Missing or expired bearer on API routes returns 401 | [Login](https://sdk.myinvois.hasil.gov.my/api/07-login-as-taxpayer-system/) | No. Error code `Unauthorized` is local. |
 | Submit limits: 100 documents, 5MB total, 300KB each. `400 MaximumSizeExceeded`. Hash is SHA-256 of the raw document; `document` is base64 of the same bytes. | [Submit Documents](https://sdk.myinvois.hasil.gov.my/einvoicingapi/02-submit-documents/), [FAQ](https://sdk.myinvois.hasil.gov.my/faq/) | No. This build treats KB as 1024 bytes (`300 * 1024`, `5 * 1024 * 1024`). A value equal to the limit is allowed. |
 | Structural problems and hash mismatch return `400 BadStructure` for the whole submission (hash mismatch adds `innerError` `DocumentHashMismatch`). `rejectedDocuments` is present and empty on success. | [Submit Documents](https://sdk.myinvois.hasil.gov.my/einvoicingapi/02-submit-documents/) | No. Inferred. The live API may accept the submission (`202`) and place the bad document in `rejectedDocuments` instead of failing the batch. |
+| Intermediary login with `onbehalfof` (`TIN` or `TIN:ROB`); the token acts for that taxpayer | [Login as Intermediary System](https://sdk.myinvois.hasil.gov.my/api/08-login-as-intermediary-system/) | No. The page does not say how an unauthorized `onbehalfof` fails. `403 IncorrectSubmitter` on API calls (default) or at login (`intermediaryDenial: token`) follows this product spec. `400` for `onbehalfof` from a non-intermediary client, exact-string matching of `TIN:ROB`, and filling `intermediaryRob` from the intermediary's BRN are local choices. |
 | Supplier TIN different from the token tenant returns `403 IncorrectSubmitter` | [Submit Documents](https://sdk.myinvois.hasil.gov.my/einvoicingapi/02-submit-documents/) | No. The code `IncorrectSubmitter` is the one this spec names; the sandbox code was not confirmed. A document with no Invoice root is accepted and later marked `Invalid` instead of `403`, so tests can cancel an invalid document. |
 | Identical raw body within 10 minutes returns `422 DuplicateSubmission` and `Retry-After`. The window includes the exact 10-minute mark. | [Submit Documents](https://sdk.myinvois.hasil.gov.my/einvoicingapi/02-submit-documents/) | No. Inclusive endpoint and `Retry-After` as delta-seconds are inferred. The hash is of the raw HTTP body. |
 | `202` then asynchronous validation. `overallStatus` is `in progress` / `valid` / `partially valid` / `invalid`. `Valid` documents gain `longId` and `dateTimeValidated`. | [Get Submission](https://sdk.myinvois.hasil.gov.my/einvoicingapi/06-get-submission/) | No. Casing of `overallStatus` follows this spec (lowercase, spaces). Live responses may differ. Field name is `submissionUID`, as in this spec; some SDK samples use `submissionUid`. |
@@ -468,7 +481,6 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 
 Not in this increment:
 
-- Intermediary login and the `onbehalfof` header
 - Dockerfile
 - `--record` / `--replay` JSONL
 - Platform APIs (`/api/v1.0/documenttypes`, notifications) and a read-only status page

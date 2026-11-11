@@ -71,7 +71,7 @@ function requestItem(
   return { name, disabled: extra?.disabled, event: extra?.event, request };
 }
 
-function loginItem(name: string): PostmanItem {
+function loginItem(name: string, header?: PostmanRequest['header']): PostmanItem {
   return requestItem(
     name,
     {
@@ -83,6 +83,7 @@ function loginItem(name: string): PostmanItem {
     {
       request: {
         method: 'POST',
+        header,
         body: {
           mode: 'urlencoded',
           urlencoded: [
@@ -196,7 +197,8 @@ function fullCollection(omit?: string): PostmanCollection {
   ];
   const platform: PostmanItem[] = [
     loginItem('Login as Taxpayer System'),
-    loginItem('Login as Intermediary System'),
+    // The official collection ships this header with an unrelated sample TIN.
+    loginItem('Login as Intermediary System', [{ key: 'onbehalfof', value: '100015840' }]),
     requestItem('Get All Document Types', 'https://{{apiBaseUrl}}/api/v1.0/documenttypes'),
     requestItem('Get Document Type', {
       raw: 'https://{{apiBaseUrl}}/api/v1.0/documenttypes/:id',
@@ -330,7 +332,10 @@ describe('transformCollection', () => {
     expect(taxpayer.find((entry) => entry.key === 'client_id')?.value).toBe(SYNTHETIC.taxpayerClientId);
     expect(taxpayer.find((entry) => entry.key === 'client_secret')?.value).toBe(SYNTHETIC.taxpayerClientSecret);
 
-    const intermediary = requestOf(byName(items, 'Login as Intermediary System')).body?.urlencoded ?? [];
+    const intermediaryRequest = requestOf(byName(items, 'Login as Intermediary System'));
+    const onBehalfOf = (intermediaryRequest.header ?? []).filter((entry) => entry.key.toLowerCase() === 'onbehalfof');
+    expect(onBehalfOf.map((entry) => entry.value)).toEqual([SYNTHETIC.intermediaryOnBehalfOf]);
+    const intermediary = intermediaryRequest.body?.urlencoded ?? [];
     expect(intermediary.find((entry) => entry.key === 'client_id')?.value).toBe(SYNTHETIC.intermediaryClientId);
     expect(intermediary.find((entry) => entry.key === 'client_secret')?.value).toBe(
       SYNTHETIC.intermediaryClientSecret,

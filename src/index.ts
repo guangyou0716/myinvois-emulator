@@ -37,8 +37,8 @@ export type { PrecheckFindingError, StandardError } from './errors.js';
 export { FaultError, loadFaultsFile, parseFaults } from './faults.js';
 export type { FaultAction, FaultEndpoint, FaultKind, FaultRule } from './faults.js';
 export { defaultConfig, DEFAULT_TENANTS } from './defaults.js';
-export { loadConfigFile, parseConfig, resolveConfig, ConfigError } from './config.js';
-export type { EmulatorConfig, ResolvedConfig, TenantConfig, TenantRole } from './config.js';
+export { loadConfigFile, parseConfig, resolveConfig, splitOnBehalfOf, ConfigError } from './config.js';
+export type { EmulatorConfig, IntermediaryDenial, ResolvedConfig, TenantConfig, TenantRole } from './config.js';
 export {
   DOCUMENT_TYPE_NAMES,
   inspectDocument,

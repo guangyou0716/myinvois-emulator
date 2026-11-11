@@ -8,6 +8,7 @@ export const SYNTHETIC: {
   taxpayerClientSecret: string;
   intermediaryClientId: string;
   intermediaryClientSecret: string;
+  intermediaryOnBehalfOf: string;
   tin: string;
   idType: string;
   idValue: string;
@@ -42,6 +43,7 @@ export interface TransformOptions {
   taxpayerClientSecret?: string;
   intermediaryClientId?: string;
   intermediaryClientSecret?: string;
+  intermediaryOnBehalfOf?: string;
   tin?: string;
   idType?: string;
   idValue?: string;
