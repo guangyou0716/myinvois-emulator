@@ -14,6 +14,8 @@ npm run build
 node dist/cli.js start --port 8787 --host 127.0.0.1 --seed 42 --clock fake
 ```
 
+Rate limits are on by default. Pass `--no-rate-limit` to disable them, or `--rpm-scale 0.5` to halve every per-endpoint RPM.
+
 The process prints `myinvois-emulator listening on http://127.0.0.1:8787`.
 
 Default client for the public samples (the supplier TIN in those files is the placeholder `Supplier's TIN`):
@@ -37,7 +39,11 @@ Library:
 ```js
 import { createEmulator } from 'myinvois-emulator';
 
-const emulator = createEmulator({ seed: 42, clock: 'fake' });
+const emulator = createEmulator({
+  seed: 42,
+  clock: 'fake',
+  rateLimit: { enabled: true, scale: 1 },
+});
 const { url } = await emulator.start({ port: 0, host: '127.0.0.1' });
 await emulator.stop();
 ```
@@ -69,7 +75,7 @@ Node.js 20 or newer. Runtime dependencies: none (`node:http` only).
 | PUT | `/api/v1.0/documents/state/{uuid}/state` | bearer | `{ "status": "cancelled" \| "rejected", "reason": "..." }`. |
 | GET | `/api/v1.0/taxpayer/validate/{tin}?idType&idValue` | bearer | `200` empty body, `400` if a query param is missing, `404` otherwise. |
 
-Every response, including errors and the empty `200`, carries a `correlationId` header (26 characters, `[A-Z0-9]`).
+Every response, including errors and the empty `200`, carries a `correlationId` header (26 characters, `[A-Z0-9]`). Limited API responses also carry `X-Rate-Limit-*` headers (see Rate limiting).
 
 Document and submission ids are 26 characters from `[A-Z0-9]`, produced by a seeded PRNG. The same seed and the same sequence of token and submit calls yield the same ids.
 
@@ -122,6 +128,52 @@ Failures use this envelope:
 
 An HTTP request body larger than 16 MiB (`16 * 1024 * 1024`) returns `400` `MaximumSizeExceeded` in this envelope, including `correlationId`. The emulator sends that response and then stops reading the rest of the body. A malformed request target, such as `/%ZZ`, returns `400` in this envelope.
 
+Exceeding a per-endpoint RPM returns `429` `RateLimitExceeded` in this envelope, with `Retry-After` and `X-Rate-Limit-*` headers.
+
+## Rate limiting
+
+Each pair of (client identity, endpoint) has a fixed 60-second window on the emulator clock. Fake-clock tests are deterministic: counts reset when you `POST /_emulator/clock/advance` past the window, with no real timers.
+
+Client identity is the OAuth `client_id` on `POST /connect/token`, and the bearer token's client on API routes. Requests with no `client_id` and unauthenticated API calls share one bucket. `/_emulator/*` control routes are never limited.
+
+Default RPM (from the MyInvois integration-practices table). Effective limit is `max(1, floor(rpm * scale))`.
+
+| Endpoint | Path | RPM |
+|---|---|---|
+| Login / token | `POST /connect/token` | 12 |
+| Submit documents | `POST /api/v1.0/documentsubmissions` | 100 |
+| Get submission | `GET /api/v1.0/documentsubmissions/{uid}` | 300 |
+| Cancel / reject document | `PUT /api/v1.0/documents/state/{uuid}/state` | 12 |
+| Get document (raw) | `GET /api/v1.0/documents/{uuid}/raw` | 60 |
+| Get document details | `GET /api/v1.0/documents/{uuid}/details` | 125 |
+| Validate TIN | `GET /api/v1.0/taxpayer/validate/{tin}` | 60 |
+
+Search documents and get recent documents are not implemented. A reserved default of **12 RPM** would apply if those routes were added.
+
+Over the limit: HTTP `429` with the standard error envelope (`errorCode` `RateLimitExceeded`, English `error` and Malay `errorMS`) plus:
+
+| Header | When | Value |
+|---|---|---|
+| `Retry-After` | 429 | Whole seconds until the window resets, at least 1 |
+| `X-Rate-Limit-Limit` | 200 and 429 | Effective RPM for that endpoint |
+| `X-Rate-Limit-Remaining` | 200 and 429 | Requests left in this window (`0` on 429) |
+| `X-Rate-Limit-Reset` | 200 and 429 | ISO-8601 UTC instant of the window reset |
+| `correlationId` | every response | Unchanged |
+
+Library option `rateLimit`:
+
+```js
+createEmulator({
+  rateLimit: {
+    enabled: true,          // default true
+    scale: 1,               // default 1; multiply RPM, then floor, minimum 1
+    rpm: { token: 12 },     // optional partial overrides of the base RPM, applied before scale
+  },
+});
+```
+
+`scale` must be a finite number greater than 0. CLI: `--rpm-scale <n>` and `--no-rate-limit`. `POST /_emulator/reset` also clears rate-limit counters.
+
 ## Control endpoints
 
 No bearer token. They are how tests move time without sleeping.
@@ -129,7 +181,7 @@ No bearer token. They are how tests move time without sleeping.
 | Method | Path | Body | Result |
 |---|---|---|---|
 | POST | `/_emulator/clock/advance` | `{ "ms": 7200000 }` | Moves a fake clock forward by a non-negative integer number of milliseconds and settles due validations. `400` when the clock is real. |
-| POST | `/_emulator/reset` | empty | Drops tokens, submissions, documents, and the duplicate-body window. Does not rewind the clock. |
+| POST | `/_emulator/reset` | empty | Drops tokens, submissions, documents, the duplicate-body window, and rate-limit counters. Does not rewind the clock. |
 | GET | `/_emulator/state` | | Submissions, documents (including the original text), `now`, clock mode, and seed. No client secrets. |
 | GET | `/_emulator/health` | | `{ "status": "ok", "clock": "fake" \| "real", "now": "..." }`. |
 
@@ -153,7 +205,8 @@ No bearer token. They are how tests move time without sleeping.
     "duplicateSubmission": "DuplicateSubmission",
     "unauthorized": "Unauthorized",
     "notFound": "NotFound",
-    "invalidRequest": "invalid_request"
+    "invalidRequest": "invalid_request",
+    "rateLimitExceeded": "RateLimitExceeded"
   },
   "statusCodes": {
     "invalidClient": 403,
@@ -165,7 +218,8 @@ No bearer token. They are how tests move time without sleeping.
     "unauthorized": 401,
     "notFound": 404,
     "incorrectState": 400,
-    "operationPeriodOver": 400
+    "operationPeriodOver": 400,
+    "rateLimitExceeded": 429
   },
   "tenants": [
     {
@@ -218,6 +272,7 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 | `GET /api/v1.0/taxpayer/validate/{tin}?idType&idValue` → 400 / 200 empty / 404 | [Validate Taxpayer TIN](https://sdk.myinvois.hasil.gov.my/einvoicingapi/01-validate-taxpayer-tin/) | No |
 | Standard error object fields, including `errorMS` and `innerError` | [Standard error response](https://sdk.myinvois.hasil.gov.my/standard-error-response/) | No. `errorMS` text is not copied from LHDN. |
 | `correlationId` response header on every response | [Standard header parameters](https://sdk.myinvois.hasil.gov.my/standard-header-parameters/) | No. The header name is the one this spec requires. |
+| Per-endpoint RPM, `429` `RateLimitExceeded`, `Retry-After`, `X-Rate-Limit-*` | [Integration practices](https://sdk.myinvois.hasil.gov.my/integration-practices/) | No. Window is a fixed 60 seconds on the emulator clock. Default RPM numbers follow that page. Search/recent are not implemented; a reserved 12 RPM would apply. |
 | Ids are 26 characters of `[A-Z0-9]` | Submit / get-submission samples on the SDK site | No. The generator is a seeded PRNG, not an LHDN id format proof. |
 | Default validator only checks an Invoice root | Local. The SDK's real rules are much larger. | No. By design this is not the LHDN rule set. |
 
@@ -229,7 +284,6 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 
 Not in this increment:
 
-- Rate limiting (per-endpoint RPM, `429`, `Retry-After`, `X-Rate-Limit-*`, `--rpm-scale`, `--no-rate-limit`)
 - Fault injection (`--faults`, `POST /_emulator/faults`, reproducible 500 / latency / 429)
 - Official Postman collection and newman contract tests
 - `--validator precheck` (shell out to the myinvois-precheck CLI; not an npm dependency)

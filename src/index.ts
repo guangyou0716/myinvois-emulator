@@ -6,6 +6,15 @@ export { createIdGenerator } from './ids.js';
 export { decodeBase64, hashesEqual, sha256Hex } from './hash.js';
 export { checkLimits, DEFAULT_LIMITS, limitMessage } from './limits.js';
 export type { LimitViolation, SubmissionLimits } from './limits.js';
+export {
+  DEFAULT_RPM,
+  RATE_LIMIT_ENDPOINTS,
+  RATE_LIMIT_UNAUTHENTICATED,
+  RateLimiter,
+  rateLimitHeaders,
+  resolveRateLimit,
+} from './rate-limit.js';
+export type { RateLimitEndpoint, RateLimitOptions, RateLimitRpm, ResolvedRateLimit } from './rate-limit.js';
 export { duplicateDecision } from './duplicate.js';
 export type { DuplicateDecision } from './duplicate.js';
 export { isInsideCancelWindow } from './window.js';
@@ -31,5 +40,6 @@ export {
   DOC_MAX_COUNT,
   DUPLICATE_WINDOW_MS,
   ID_LENGTH,
+  RATE_LIMIT_WINDOW_MS,
   SUBMISSION_MAX_BYTES,
 } from './constants.js';

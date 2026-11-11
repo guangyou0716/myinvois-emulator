@@ -17,6 +17,7 @@ export const DEFAULT_ERROR_CODES: ErrorCodeMap = {
   unauthorized: 'Unauthorized',
   notFound: 'NotFound',
   invalidRequest: 'invalid_request',
+  rateLimitExceeded: 'RateLimitExceeded',
 };
 
 export const DEFAULT_STATUS_CODES: StatusCodeMap = {
@@ -30,6 +31,7 @@ export const DEFAULT_STATUS_CODES: StatusCodeMap = {
   notFound: 404,
   incorrectState: 400,
   operationPeriodOver: 400,
+  rateLimitExceeded: 429,
 };
 
 /**

@@ -9,7 +9,8 @@ export interface CliIo {
   stderr(text: string): void;
 }
 
-const USAGE = 'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json]';
+const USAGE =
+  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit]';
 
 const HELP = `${USAGE}
 
@@ -24,6 +25,8 @@ Options:
   --seed      Integer seed for ids and tokens. Default 1
   --clock     real (wall clock) or fake (moves only via /_emulator/clock/advance). Default real
   --config    JSON config file. Omitted fields keep the built-in defaults
+  --rpm-scale Multiply per-endpoint RPM (floor, minimum 1). Default 1
+  --no-rate-limit Disable per-endpoint rate limits
   --help      Show this help
   --version   Print the package version
 
@@ -41,6 +44,8 @@ type Parsed =
       seed: number;
       clock: 'real' | 'fake';
       configPath: string | null;
+      rateLimitEnabled: boolean;
+      rpmScale: number;
     };
 
 function packageVersion(): string {
@@ -72,6 +77,8 @@ export function parseArgs(argv: string[]): Parsed {
   let seed = 1;
   let clock: 'real' | 'fake' = 'real';
   let configPath: string | null = null;
+  let rateLimitEnabled = true;
+  let rpmScale = 1;
 
   try {
     for (let index = 0; index < argv.length; index += 1) {
@@ -114,6 +121,20 @@ export function parseArgs(argv: string[]): Parsed {
         index += 1;
         continue;
       }
+      if (arg === '--rpm-scale') {
+        const raw = takeValue(argv, index, '--rpm-scale');
+        const scale = Number(raw);
+        if (!Number.isFinite(scale) || scale <= 0) {
+          return { mode: 'error', message: '--rpm-scale must be a finite number greater than 0' };
+        }
+        rpmScale = scale;
+        index += 1;
+        continue;
+      }
+      if (arg === '--no-rate-limit') {
+        rateLimitEnabled = false;
+        continue;
+      }
       if (arg.startsWith('--')) return { mode: 'error', message: `Unknown option: ${arg}` };
       return { mode: 'error', message: `Unexpected argument: ${arg}` };
     }
@@ -122,7 +143,7 @@ export function parseArgs(argv: string[]): Parsed {
   }
 
   if (command !== 'start') return { mode: 'error', message: 'Missing command: start' };
-  return { mode: 'start', port, host, seed, clock, configPath };
+  return { mode: 'start', port, host, seed, clock, configPath, rateLimitEnabled, rpmScale };
 }
 
 export async function run(argv: string[], io: CliIo): Promise<number> {
@@ -156,6 +177,10 @@ export async function run(argv: string[], io: CliIo): Promise<number> {
     host: parsed.host,
     port: parsed.port,
     config,
+    rateLimit: {
+      enabled: parsed.rateLimitEnabled,
+      scale: parsed.rpmScale,
+    },
     onError(error) {
       const detail = error instanceof Error ? error.message : String(error);
       io.stderr(`request failed: ${detail}\n`);
