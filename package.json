@@ -30,7 +30,7 @@
     "@eslint/js": "^9",
     "@types/node": "^20",
     "eslint": "^9",
-    "globals": "^16",
+    "globals": "^17",
     "newman": "^6.2.3",
     "typescript": "^5",
     "typescript-eslint": "^8",
