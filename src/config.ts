@@ -29,6 +29,7 @@ export interface ErrorCodeMap {
   unauthorized: string;
   notFound: string;
   invalidRequest: string;
+  rateLimitExceeded: string;
 }
 
 export interface StatusCodeMap {
@@ -42,6 +43,7 @@ export interface StatusCodeMap {
   notFound: number;
   incorrectState: number;
   operationPeriodOver: number;
+  rateLimitExceeded: number;
 }
 
 export interface EmulatorConfig {

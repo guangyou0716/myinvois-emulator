@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
 import { sha256Hex } from '../src/hash.js';
 import { createEmulator, type Emulator } from '../src/emulator.js';
+import type { RateLimitOptions } from '../src/rate-limit.js';
 
 export function samplePath(name: string): string {
   return fileURLToPath(new URL(`../fixtures/samples/${name}`, import.meta.url));
@@ -55,7 +56,11 @@ export function encodeDocument(
   };
 }
 
-export async function startServer(options?: { clock?: 'fake' | 'real'; seed?: number }): Promise<{
+export async function startServer(options?: {
+  clock?: 'fake' | 'real';
+  seed?: number;
+  rateLimit?: RateLimitOptions;
+}): Promise<{
   emulator: Emulator;
   base: string;
 }> {
@@ -63,6 +68,7 @@ export async function startServer(options?: { clock?: 'fake' | 'real'; seed?: nu
     clock: options?.clock ?? 'fake',
     seed: options?.seed ?? 42,
     host: '127.0.0.1',
+    rateLimit: options?.rateLimit,
   });
   const info = await emulator.start({ port: 0, host: '127.0.0.1' });
   if (!info.url.startsWith('http://127.0.0.1:')) {

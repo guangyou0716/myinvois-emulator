@@ -8,6 +8,7 @@ import { errorBody, standardError, type StandardError } from './errors.js';
 import { decodeBase64, hashesEqual, sha256Hex } from './hash.js';
 import { checkLimits, limitMessage } from './limits.js';
 import { duplicateDecision } from './duplicate.js';
+import type { RateLimiter } from './rate-limit.js';
 import { decideTransition, overallStatus, type DocumentStatus } from './state-machine.js';
 
 export interface EngineResult {
@@ -106,6 +107,7 @@ export class EmulatorEngine {
     private readonly ids: () => string,
     private readonly seed: number,
     private readonly clockMode: 'fake' | 'real',
+    private readonly rateLimiter: RateLimiter,
   ) {}
 
   health(): EngineResult {
@@ -158,6 +160,7 @@ export class EmulatorEngine {
     this.submissions.clear();
     this.documents.clear();
     this.acceptedBodies.clear();
+    this.rateLimiter.reset();
     return { status: 200, body: { reset: true } };
   }
 
@@ -262,6 +265,28 @@ export class EmulatorEngine {
     );
     if (!tenant) return { ok: false, result: this.unauthorized() };
     return { ok: true, tenant };
+  }
+
+  /** Client id for a currently valid bearer token; null when missing, unknown, or expired. */
+  clientIdForBearer(token: string | null): string | null {
+    if (token === null) return null;
+    const issued = this.tokens.get(token);
+    if (!issued || this.clock.now() >= issued.expiresAt) return null;
+    return issued.clientId;
+  }
+
+  tooManyRequests(headers: Record<string, string>): EngineResult {
+    return {
+      status: this.config.statusCodes.rateLimitExceeded,
+      headers,
+      body: errorBody(
+        standardError({
+          errorCode: this.config.errorCodes.rateLimitExceeded,
+          error: 'Rate limit exceeded. Wait until the window resets before retrying.',
+          errorMS: 'Had kadar dilampaui. Tunggu sehingga tetingkap diset semula sebelum mencuba lagi.',
+        }),
+      ),
+    };
   }
 
   submit(rawBody: Buffer, tenant: TenantConfig): EngineResult {

@@ -5,6 +5,13 @@ import { resolveConfig, type EmulatorConfig, type ResolvedConfig, type TenantCon
 import { EmulatorEngine, type EngineResult } from './engine.js';
 import { errorBody, standardError } from './errors.js';
 import { createIdGenerator } from './ids.js';
+import {
+  RATE_LIMIT_UNAUTHENTICATED,
+  RateLimiter,
+  resolveRateLimit,
+  type RateLimitEndpoint,
+  type RateLimitOptions,
+} from './rate-limit.js';
 
 export interface EmulatorOptions {
   /** Integer seed for document, submission, and token ids. Default 1. */
@@ -16,6 +23,8 @@ export interface EmulatorOptions {
   /** Default listen port. `0` asks the OS for a free port. Default 8787. */
   port?: number;
   config?: EmulatorConfig;
+  /** Per-endpoint RPM. Enabled by default. `/_emulator/*` is never limited. */
+  rateLimit?: RateLimitOptions;
   /** Called when a request handler throws. */
   onError?(error: unknown): void;
 }
@@ -136,6 +145,7 @@ class EmulatorServer implements Emulator {
   private readonly http: Server;
   private readonly engine: EmulatorEngine;
   private readonly config: ResolvedConfig;
+  private readonly rateLimiter: RateLimiter;
   private readonly correlationIds: () => string;
   private readonly preferredHost: string;
   private readonly preferredPort: number;
@@ -151,12 +161,14 @@ class EmulatorServer implements Emulator {
     this.clock = resolveClock(options.clock);
     const clockMode = isAdjustableClock(this.clock) && !(this.clock instanceof RealClock) ? 'fake' : 'real';
     this.config = resolveConfig(options.config);
+    this.rateLimiter = new RateLimiter(this.clock, resolveRateLimit(options.rateLimit));
     this.engine = new EmulatorEngine(
       this.config,
       this.clock,
       createIdGenerator(seed),
       seed,
       clockMode,
+      this.rateLimiter,
     );
     this.correlationIds = createIdGenerator(seed ^ 0x9e3779b9);
     this.preferredHost = options.host ?? '127.0.0.1';
@@ -291,7 +303,10 @@ class EmulatorServer implements Emulator {
     if (path === '/connect/token') {
       if (method !== 'POST') return this.engine.methodNotAllowed('POST');
       const raw = await readBody(req);
-      return this.engine.issueToken(new URLSearchParams(raw.toString('utf8')));
+      const form = new URLSearchParams(raw.toString('utf8'));
+      const clientId = form.get('client_id');
+      const identity = clientId !== null && clientId.trim() !== '' ? clientId : RATE_LIMIT_UNAUTHENTICATED;
+      return this.limited(identity, 'token', () => this.engine.issueToken(form));
     }
     if (path === '/_emulator/health') {
       if (method !== 'GET' && method !== 'HEAD') return this.engine.methodNotAllowed('GET');
@@ -327,57 +342,57 @@ class EmulatorServer implements Emulator {
 
     if (path === '/api/v1.0/documentsubmissions') {
       if (method !== 'POST') return this.engine.methodNotAllowed('POST');
-      const auth = this.authorize(req);
-      if (!auth.ok) return auth.result;
-      const raw = await readBody(req);
-      return this.engine.submit(raw, auth.tenant);
+      return this.limitedApi(req, 'submit', async (tenant) => {
+        const raw = await readBody(req);
+        return this.engine.submit(raw, tenant);
+      });
     }
     if (submissionUid) {
       if (method !== 'GET') return this.engine.methodNotAllowed('GET');
-      const auth = this.authorize(req);
-      if (!auth.ok) return auth.result;
-      const uid = decodePathSegment(submissionUid[1] ?? '');
-      if (uid === null) return this.engine.notFound('Submission was not found');
-      return this.engine.getSubmission(uid, url.searchParams.get('pageNo'), url.searchParams.get('pageSize'));
+      return this.limitedApi(req, 'getSubmission', () => {
+        const uid = decodePathSegment(submissionUid[1] ?? '');
+        if (uid === null) return this.engine.notFound('Submission was not found');
+        return this.engine.getSubmission(uid, url.searchParams.get('pageNo'), url.searchParams.get('pageSize'));
+      });
     }
     if (rawDoc) {
       if (method !== 'GET') return this.engine.methodNotAllowed('GET');
-      const auth = this.authorize(req);
-      if (!auth.ok) return auth.result;
-      const uuid = decodePathSegment(rawDoc[1] ?? '');
-      if (uuid === null) return this.engine.notFound('Document was not found');
-      return this.engine.getRaw(uuid);
+      return this.limitedApi(req, 'getDocument', () => {
+        const uuid = decodePathSegment(rawDoc[1] ?? '');
+        if (uuid === null) return this.engine.notFound('Document was not found');
+        return this.engine.getRaw(uuid);
+      });
     }
     if (details) {
       if (method !== 'GET') return this.engine.methodNotAllowed('GET');
-      const auth = this.authorize(req);
-      if (!auth.ok) return auth.result;
-      const uuid = decodePathSegment(details[1] ?? '');
-      if (uuid === null) return this.engine.notFound('Document was not found');
-      return this.engine.getDetails(uuid);
+      return this.limitedApi(req, 'getDocumentDetails', () => {
+        const uuid = decodePathSegment(details[1] ?? '');
+        if (uuid === null) return this.engine.notFound('Document was not found');
+        return this.engine.getDetails(uuid);
+      });
     }
     if (stateChange) {
       if (method !== 'PUT') return this.engine.methodNotAllowed('PUT');
-      const auth = this.authorize(req);
-      if (!auth.ok) return auth.result;
-      const uuid = decodePathSegment(stateChange[1] ?? '');
-      if (uuid === null) return this.engine.notFound('Document was not found');
-      const raw = await readBody(req);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(raw.toString('utf8')) as unknown;
-      } catch {
-        parsed = null;
-      }
-      return this.engine.changeState(uuid, auth.tenant, parsed);
+      return this.limitedApi(req, 'cancelReject', async (tenant) => {
+        const uuid = decodePathSegment(stateChange[1] ?? '');
+        if (uuid === null) return this.engine.notFound('Document was not found');
+        const raw = await readBody(req);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw.toString('utf8')) as unknown;
+        } catch {
+          parsed = null;
+        }
+        return this.engine.changeState(uuid, tenant, parsed);
+      });
     }
     if (taxpayer) {
       if (method !== 'GET') return this.engine.methodNotAllowed('GET');
-      const auth = this.authorize(req);
-      if (!auth.ok) return auth.result;
-      const tin = decodePathSegment(taxpayer[1] ?? '');
-      if (tin === null) return this.engine.notFound('Taxpayer TIN was not found');
-      return this.engine.validateTaxpayer(tin, url.searchParams.get('idType'), url.searchParams.get('idValue'));
+      return this.limitedApi(req, 'validateTin', () => {
+        const tin = decodePathSegment(taxpayer[1] ?? '');
+        if (tin === null) return this.engine.notFound('Taxpayer TIN was not found');
+        return this.engine.validateTaxpayer(tin, url.searchParams.get('idType'), url.searchParams.get('idValue'));
+      });
     }
     return this.engine.notFound('Path was not found');
   }
@@ -387,6 +402,42 @@ class EmulatorServer implements Emulator {
     const value = Array.isArray(header) ? header[0] : header;
     return this.engine.authenticate(bearerToken(value));
   }
+
+  private clientIdentity(req: IncomingMessage): string {
+    const header = req.headers.authorization;
+    const value = Array.isArray(header) ? header[0] : header;
+    return this.engine.clientIdForBearer(bearerToken(value)) ?? RATE_LIMIT_UNAUTHENTICATED;
+  }
+
+  private consume(
+    clientId: string,
+    endpoint: RateLimitEndpoint,
+  ): { blocked: true; result: EngineResult } | { blocked: false; headers: Record<string, string> } {
+    if (!this.rateLimiter.enabled) return { blocked: false, headers: {} };
+    const decision = this.rateLimiter.hit(clientId, endpoint);
+    if (!decision.allowed) {
+      return { blocked: true, result: this.engine.tooManyRequests(decision.headers) };
+    }
+    return { blocked: false, headers: decision.headers };
+  }
+
+  private limited(clientId: string, endpoint: RateLimitEndpoint, run: () => EngineResult): EngineResult {
+    const gate = this.consume(clientId, endpoint);
+    if (gate.blocked) return gate.result;
+    return withHeaders(run(), gate.headers);
+  }
+
+  private async limitedApi(
+    req: IncomingMessage,
+    endpoint: RateLimitEndpoint,
+    run: (tenant: TenantConfig) => EngineResult | Promise<EngineResult>,
+  ): Promise<EngineResult> {
+    const gate = this.consume(this.clientIdentity(req), endpoint);
+    if (gate.blocked) return gate.result;
+    const auth = this.authorize(req);
+    if (!auth.ok) return withHeaders(auth.result, gate.headers);
+    return withHeaders(await run(auth.tenant), gate.headers);
+  }
 }
 
 function resolveClock(clock: EmulatorOptions['clock']): Clock {
@@ -394,6 +445,11 @@ function resolveClock(clock: EmulatorOptions['clock']): Clock {
   if (clock === 'real' || clock === undefined) return new RealClock();
   if (clock instanceof RealClock) return clock;
   return clock;
+}
+
+function withHeaders(result: EngineResult, extra: Record<string, string>): EngineResult {
+  if (Object.keys(extra).length === 0) return result;
+  return { ...result, headers: { ...extra, ...result.headers } };
 }
 
 function send(

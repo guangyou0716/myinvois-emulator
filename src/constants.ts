@@ -9,6 +9,8 @@ export const SUBMISSION_MAX_BYTES = 5 * 1024 * 1024;
 export const DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 /** Cancel and reject are allowed through this duration after dateTimeValidated. */
 export const CANCEL_WINDOW_MS = 72 * 60 * 60 * 1000;
+/** Per-endpoint RPM window. Counts reset when the emulator clock leaves this window. */
+export const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 export const DEFAULT_VALIDATION_DELAY_MS = 2000;
 export const DEFAULT_TOKEN_TTL_SECONDS = 3600;
