@@ -120,6 +120,8 @@ Failures use this envelope:
 
 `errorMS` is always present. The Malay text is a local paraphrase, not an official LHDN string.
 
+An HTTP request body larger than 16 MiB (`16 * 1024 * 1024`) returns `400` `MaximumSizeExceeded` in this envelope, including `correlationId`. The emulator sends that response and then stops reading the rest of the body. A malformed request target, such as `/%ZZ`, returns `400` in this envelope.
+
 ## Control endpoints
 
 No bearer token. They are how tests move time without sleeping.

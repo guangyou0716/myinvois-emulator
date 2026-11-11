@@ -1,7 +1,8 @@
+import { request as httpRequest } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DOC_MAX_BYTES, SUBMISSION_MAX_BYTES } from '../src/constants.js';
+import { DOC_MAX_BYTES, MAX_BODY_BYTES, SUBMISSION_MAX_BYTES } from '../src/constants.js';
 import { defaultConfig } from '../src/defaults.js';
-import type { Emulator } from '../src/emulator.js';
+import { createEmulator, type Emulator } from '../src/emulator.js';
 import {
   advance,
   assertCorrelation,
@@ -220,6 +221,45 @@ describe('http emulator', () => {
     expect(Array.isArray(error.innerError)).toBe(true);
     const inner = error.innerError as { errorCode: string }[];
     expect(inner[0]?.errorCode).toBe('DocumentHashMismatch');
+  });
+
+  it('returns 400 MaximumSizeExceeded when the HTTP body exceeds 16 MiB', async () => {
+    const size = MAX_BODY_BYTES + 1;
+    let sent = 0;
+    const chunkSize = 64 * 1024;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= size) {
+          controller.close();
+          return;
+        }
+        const n = Math.min(chunkSize, size - sent);
+        sent += n;
+        controller.enqueue(new Uint8Array(n));
+      },
+    });
+    const res = await fetch(`${base}/connect/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body,
+      // Node fetch requires duplex for a streamed body. The DOM RequestInit
+      // type, which this tsconfig includes, does not declare the field.
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+    const error = await expectError(res, 400, 'MaximumSizeExceeded');
+    expect(error.target).toBe('body');
+    expect(error.propertyPath).toBe('body');
+
+    const health = await fetch(`${base}/_emulator/health`);
+    assertCorrelation(health);
+    expect(health.status).toBe(200);
+  });
+
+  it('returns 400 for a malformed request target', async () => {
+    const res = await rawGet(base, '/%ZZ');
+    const error = await expectError(res, 400, 'invalid_request');
+    expect(error.target).toBe('url');
+    expect(error.error).toMatch(/malformed/i);
   });
 
   it('returns 400 MaximumSizeExceeded for 101 documents and accepts 100', async () => {
@@ -469,6 +509,45 @@ describe('http emulator', () => {
       expect(bodyA.submissionUID).toBe(bodyB.submissionUID);
     } finally {
       await other.emulator.stop();
+    }
+  });
+});
+
+function rawGet(base: string, path: string): Promise<Response> {
+  const url = new URL(base);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ hostname: url.hostname, port: url.port, path, method: 'GET' }, (incoming) => {
+      const chunks: Buffer[] = [];
+      incoming.on('data', (chunk: Buffer) => chunks.push(chunk));
+      incoming.on('end', () => {
+        const correlation = incoming.headers.correlationid;
+        const correlationId = Array.isArray(correlation) ? correlation[0] : correlation;
+        const headers = new Headers();
+        if (correlationId !== undefined) headers.set('correlationid', correlationId);
+        resolve(new Response(Buffer.concat(chunks), { status: incoming.statusCode ?? 0, headers }));
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+describe('handler failures', () => {
+  it('returns the SystemError envelope and correlationId when the handler throws', async () => {
+    const emulator = createEmulator({
+      host: '127.0.0.1',
+      clock: {
+        now() {
+          throw new Error('injected clock failure');
+        },
+      },
+    });
+    const info = await emulator.start({ port: 0, host: '127.0.0.1' });
+    try {
+      const res = await fetch(`${info.url}/_emulator/health`);
+      await expectError(res, 500, 'SystemError');
+    } finally {
+      await emulator.stop();
     }
   });
 });
