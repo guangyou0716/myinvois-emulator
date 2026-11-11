@@ -16,6 +16,12 @@ export interface RecordEntry {
   status: number | null;
   /** UTF-8 response body, or null when there was none. */
   responseBody: string | null;
+  /**
+   * `seq` of the recorded `/connect/token` response that issued the bearer token this request
+   * sent, or null when it sent none or a token not issued during this recording. The token
+   * itself is never stored; replay uses this to send the matching fresh token.
+   */
+  authFrom: number | null;
 }
 
 export type Recorder = (entry: RecordEntry) => void;

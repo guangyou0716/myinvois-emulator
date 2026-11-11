@@ -382,7 +382,21 @@ Pending latency timers are cancelled when the server stops, so a delayed request
 - `client_secret` (form or JSON) and top-level `access_token` become `[redacted]`. The `Authorization` header is never stored; only `content-type` and `onbehalfof` are kept.
 - Submission bodies are stored as sent, including base64 documents. Do not record real invoices you would not keep in a file.
 - `status` and `responseBody` are `null` for a dropped connection (for example a `reset` fault). A missing directory or unwritable file is a startup error (exit 2). A recorder that throws is reported through `onError`; the response is unaffected.
-- Replaying a recording against the emulator is not built in yet.
+- `authFrom` is the `seq` of the recorded token response whose token the request sent (null for none, or for a token issued outside the recording). The token itself is never stored.
+
+### Replaying a recording
+
+```bash
+myinvois-emulator start --port 8788 --clock fake --seed 1   # same seed, clock, config and faults as the recording
+myinvois-emulator replay requests.jsonl --target http://127.0.0.1:8788 [--config emulator.json]
+```
+
+`replay` sends each entry in `seq` order and compares the HTTP status and the redacted response body. It prints one line per mismatch (`status`, `body`, or `skipped`) and `replay: N/M matched`. Exit 0 when all match, 1 when any differ, 2 for a bad file or arguments. Library: `replayRecording(parseRecording(text), { baseUrl, secrets })`.
+
+- Redacted `client_secret` values are filled in from the tenants in `--config` (default: the built-in tenants). A token request for an unknown `client_id` is `skipped`, and so is every request that used its token.
+- Requests with `authFrom` get the fresh token from the replayed token request. Requests that sent no token, or a token from outside the recording, are replayed without `Authorization`.
+- `replay` sends those tenant secrets to `--target`. Point it only at a local emulator.
+- Record with `--clock fake` for an exact match; a real clock puts different timestamps in bodies. A dropped connection matches only if the replay also drops it.
 
 ## Control endpoints
 
@@ -505,7 +519,6 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 
 Not in this increment:
 
-- `--replay` of a `--record` JSONL file
 - Platform APIs (`/api/v1.0/documenttypes`, notifications) and a read-only status page
 - Structural checks for the v1.1 signature block (presence only, no cryptography)
 

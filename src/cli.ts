@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { loadConfigFile, type EmulatorConfig } from './config.js';
+import { loadConfigFile, type EmulatorConfig, type TenantConfig } from './config.js';
 import { createEmulator } from './emulator.js';
 import { loadFaultsFile, type FaultRule } from './faults.js';
-import { createJsonlRecorder, type Recorder } from './record.js';
+import { DEFAULT_TENANTS } from './defaults.js';
+import { createJsonlRecorder, type Recorder, type RecordEntry } from './record.js';
+import { loadRecordingFile, replayRecording } from './replay.js';
 import { splitCommand, ValidatorError, type ValidatorOption } from './validator.js';
 
 export interface CliIo {
@@ -13,7 +15,7 @@ export interface CliIo {
 }
 
 const USAGE =
-  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit] [--faults faults.json] [--validator none|precheck] [--precheck-cmd "<cmd>"] [--record requests.jsonl]';
+  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit] [--faults faults.json] [--validator none|precheck] [--precheck-cmd "<cmd>"] [--record requests.jsonl]\n       myinvois-emulator replay requests.jsonl --target http://127.0.0.1:8787 [--config emulator.json]';
 
 const HELP = `${USAGE}
 
@@ -21,6 +23,7 @@ Offline MyInvois emulator. It binds to 127.0.0.1 by default and never calls LHDN
 
 Commands:
   start       Listen for identity and e-invoicing requests
+  replay      Send a --record file to a running emulator and compare status and body
 
 Options:
   --port      TCP port (0 lets the OS choose). Default 8787
@@ -34,6 +37,8 @@ Options:
   --validator none (Invoice root only) or precheck (shell out to myinvois-precheck). Default none
   --precheck-cmd  Command to run for --validator precheck, e.g. "node dist/cli.js --json". Required when precheck
   --record    Append one redacted JSON line per request/response to this file (client_secret and access_token become [redacted]; Authorization is not stored)
+  --target    replay: base URL of a fresh emulator started with the recording's seed, clock, config and faults
+  --config    replay: the same config file, so redacted client secrets can be filled in. Default built-in tenants
   --help      Show this help
   --version   Print the package version
 
@@ -44,6 +49,7 @@ type Parsed =
   | { mode: 'help' }
   | { mode: 'version' }
   | { mode: 'error'; message: string }
+  | { mode: 'replay'; file: string; target: string; configPath: string | null }
   | {
       mode: 'start';
       port: number;
@@ -78,9 +84,48 @@ function takeValue(argv: string[], index: number, flag: string): string {
   return value;
 }
 
+function parseReplayArgs(argv: string[]): Parsed {
+  let file: string | null = null;
+  let target: string | null = null;
+  let configPath: string | null = null;
+  try {
+    for (let index = 0; index < argv.length; index += 1) {
+      const arg = argv[index] ?? '';
+      if (arg === '--target') {
+        target = takeValue(argv, index, '--target');
+        index += 1;
+        continue;
+      }
+      if (arg === '--config') {
+        configPath = takeValue(argv, index, '--config');
+        index += 1;
+        continue;
+      }
+      if (arg.startsWith('--')) return { mode: 'error', message: `Unknown option for replay: ${arg}` };
+      if (file !== null) return { mode: 'error', message: `Unexpected argument: ${arg}` };
+      file = arg;
+    }
+  } catch (cause) {
+    return { mode: 'error', message: cause instanceof Error ? cause.message : String(cause) };
+  }
+  if (file === null) return { mode: 'error', message: 'replay needs a recording file' };
+  if (target === null) return { mode: 'error', message: 'replay needs --target <url>' };
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    return { mode: 'error', message: '--target must be an http(s) URL' };
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { mode: 'error', message: '--target must be an http(s) URL' };
+  }
+  return { mode: 'replay', file, target, configPath };
+}
+
 export function parseArgs(argv: string[]): Parsed {
   if (argv.includes('--help')) return { mode: 'help' };
   if (argv.includes('--version')) return { mode: 'version' };
+  if (argv[0] === 'replay') return parseReplayArgs(argv.slice(1));
 
   let command: string | null = null;
   let port = 8787;
@@ -182,7 +227,7 @@ export function parseArgs(argv: string[]): Parsed {
     return { mode: 'error', message: cause instanceof Error ? cause.message : String(cause) };
   }
 
-  if (command !== 'start') return { mode: 'error', message: 'Missing command: start' };
+  if (command !== 'start') return { mode: 'error', message: 'Missing command: start or replay' };
 
   let precheckCommand: string[] | null = null;
   if (validator === 'precheck') {
@@ -235,6 +280,7 @@ export async function run(argv: string[], io: CliIo): Promise<number> {
     io.stderr(`${parsed.message}\n${HELP}`);
     return 2;
   }
+  if (parsed.mode === 'replay') return runReplay(parsed, io);
 
   let config: EmulatorConfig | undefined;
   if (parsed.configPath) {
@@ -316,6 +362,37 @@ export async function run(argv: string[], io: CliIo): Promise<number> {
   });
   await emulator.stop();
   return 0;
+}
+
+/** Mismatch lines printed before the rest are summarised. */
+const MAX_MISMATCH_LINES = 20;
+
+function clip(text: string): string {
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+}
+
+async function runReplay(parsed: { file: string; target: string; configPath: string | null }, io: CliIo): Promise<number> {
+  let tenants: readonly TenantConfig[] = DEFAULT_TENANTS;
+  let entries: RecordEntry[];
+  try {
+    if (parsed.configPath) tenants = loadConfigFile(parsed.configPath).tenants ?? DEFAULT_TENANTS;
+    entries = loadRecordingFile(parsed.file);
+  } catch (cause) {
+    io.stderr(`${cause instanceof Error ? cause.message : String(cause)}\n`);
+    return 2;
+  }
+  const secrets: Record<string, string> = {};
+  for (const tenant of tenants) secrets[tenant.clientId] = tenant.clientSecret;
+
+  const result = await replayRecording(entries, { baseUrl: parsed.target, secrets });
+  for (const m of result.mismatches.slice(0, MAX_MISMATCH_LINES)) {
+    io.stdout(`seq ${m.seq} ${m.method} ${m.target}: ${m.kind} expected ${clip(m.expected)} got ${clip(m.actual)}\n`);
+  }
+  if (result.mismatches.length > MAX_MISMATCH_LINES) {
+    io.stdout(`… ${result.mismatches.length - MAX_MISMATCH_LINES} more mismatches\n`);
+  }
+  io.stdout(`replay: ${result.matched}/${result.total} matched\n`);
+  return result.mismatches.length === 0 ? 0 : 1;
 }
 
 function isEntryPoint(): boolean {

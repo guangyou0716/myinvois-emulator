@@ -69,3 +69,5 @@ export {
 } from './constants.js';
 export { createJsonlRecorder, redactForm, redactJson, REDACTED } from './record.js';
 export type { RecordEntry, Recorder } from './record.js';
+export { loadRecordingFile, parseRecording, RecordingError, replayRecording } from './replay.js';
+export type { ReplayMismatch, ReplayOptions, ReplayResult } from './replay.js';

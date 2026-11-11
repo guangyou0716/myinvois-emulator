@@ -97,6 +97,26 @@ function bearerToken(header: string | undefined): string | null {
   return match?.[1] ?? null;
 }
 
+function isTokenTarget(target: string | undefined): boolean {
+  if (target === undefined) return false;
+  const path = target.split('?')[0] ?? '';
+  return path === '/connect/token' || path === '/connect/token/';
+}
+
+/** `access_token` from a token response body, or null when absent or not JSON. */
+function issuedToken(body: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      const token = (parsed as Record<string, unknown>).access_token;
+      if (typeof token === 'string' && token !== '') return token;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -186,6 +206,8 @@ class EmulatorServer implements Emulator {
   private readonly onError: (error: unknown) => void;
   private readonly recorder: Recorder | null;
   private recordSeq = 0;
+  /** Bearer token -> seq of the recorded token response that issued it. Only filled while recording. */
+  private readonly recordedTokens = new Map<string, number>();
   private readonly pendingDelays = new Set<{
     timer: ReturnType<typeof setTimeout>;
     reject: (error: EmulatorClosedError) => void;
@@ -313,6 +335,12 @@ class EmulatorServer implements Emulator {
     }
     const rawResponse = capturedResponseBodies.get(res);
     const finished = res.writableFinished;
+    const sentToken = bearerToken(req.headers.authorization);
+    const authFrom = sentToken === null ? null : (this.recordedTokens.get(sentToken) ?? null);
+    if (finished && res.statusCode === 200 && rawResponse !== undefined && isTokenTarget(req.url)) {
+      const issued = issuedToken(rawResponse);
+      if (issued !== null) this.recordedTokens.set(issued, seq);
+    }
     try {
       recorder({
         seq,
@@ -323,6 +351,7 @@ class EmulatorServer implements Emulator {
         requestBody,
         status: finished ? res.statusCode : null,
         responseBody: finished && rawResponse !== undefined ? redactJson(rawResponse) : null,
+        authFrom,
       });
     } catch (error) {
       this.onError(error);
