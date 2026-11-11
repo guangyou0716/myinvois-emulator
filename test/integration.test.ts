@@ -76,6 +76,37 @@ describe('http emulator', () => {
     await expectError(basicOnly, 400, 'invalid_request');
   });
 
+  it('treats scope as optional and still rejects a placeholder scope', async () => {
+    async function token(form: Record<string, string>): Promise<Response> {
+      return fetch(`${base}/connect/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: supplier.clientId,
+          client_secret: supplier.clientSecret,
+          ...form,
+        }),
+      });
+    }
+    const optional: Array<Record<string, string>> = [{}, { scope: '' }, { scope: '  ' }];
+    for (const [i, form] of optional.entries()) {
+      const res = await token(form);
+      assertCorrelation(res);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { access_token: string; scope: string };
+      expect(body.scope).toBe('InvoicingAPI');
+      const raw = JSON.stringify({
+        documents: [encodeDocument(minimalInvoice(supplier.tin, buyer.tin, `SCOPE-${i}`), 'JSON', `SCOPE-${i}`)],
+      });
+      expect((await submitRaw(base, body.access_token, raw)).status).toBe(202);
+    }
+    const custom = await token({ scope: ' InvoicingAPI ' });
+    expect(((await custom.json()) as { scope: string }).scope).toBe('InvoicingAPI');
+    await expectError(await token({ scope: 'YOUR_SCOPE' }), 400, 'invalid_request');
+    await expectError(await token({ scope: '0' }), 400, 'invalid_request');
+  });
+
   it('returns 403 invalid_client for bad credentials', async () => {
     const res = await fetch(`${base}/connect/token`, {
       method: 'POST',

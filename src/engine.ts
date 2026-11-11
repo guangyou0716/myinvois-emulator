@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { Clock } from './clock.js';
 import { isAdjustableClock } from './clock.js';
-import { MAX_PAGE_SIZE, MAX_REASON_LENGTH } from './constants.js';
+import { DEFAULT_TOKEN_SCOPE, MAX_PAGE_SIZE, MAX_REASON_LENGTH } from './constants.js';
 import { splitOnBehalfOf, type ResolvedConfig, type TenantConfig } from './config.js';
 import {
   inspectDocument,
@@ -226,12 +226,15 @@ export class EmulatorEngine {
     const grantType = form.get('grant_type');
     const clientId = form.get('client_id');
     const clientSecret = form.get('client_secret');
-    const scope = form.get('scope');
+    // scope is optional on both login pages; an omitted or empty scope is granted the default.
+    const requestedScope = form.get('scope');
+    const scopeOmitted = requestedScope === null || requestedScope.trim() === '';
+    const scope = scopeOmitted ? DEFAULT_TOKEN_SCOPE : requestedScope.trim();
     if (
       isMissingOrPlaceholder(grantType) ||
       isMissingOrPlaceholder(clientId) ||
       isMissingOrPlaceholder(clientSecret) ||
-      isMissingOrPlaceholder(scope)
+      (!scopeOmitted && isMissingOrPlaceholder(scope))
     ) {
       return {
         status: this.config.statusCodes.missingParameters,
@@ -240,8 +243,8 @@ export class EmulatorEngine {
             propertyName: 'client_id',
             propertyPath: 'client_id',
             errorCode: this.config.errorCodes.invalidRequest,
-            error: 'grant_type, client_id, client_secret, and scope are required and must not be placeholders',
-            errorMS: 'grant_type, client_id, client_secret, dan scope diperlukan dan tidak boleh nilai pemegang tempat',
+            error: 'grant_type, client_id, and client_secret are required, and no parameter (including an optional scope) may be a placeholder',
+            errorMS: 'grant_type, client_id dan client_secret diperlukan, dan tiada parameter (termasuk scope pilihan) boleh menjadi nilai pemegang tempat',
             target: 'client_id',
           }),
         ),
@@ -303,7 +306,7 @@ export class EmulatorEngine {
       clientId: tenant.clientId,
       actingTin,
       onBehalfOf,
-      scope: scope ?? '',
+      scope,
       expiresAt: now + this.config.tokenTtlSeconds * 1000,
     });
     return {

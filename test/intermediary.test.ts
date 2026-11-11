@@ -137,6 +137,24 @@ describe('intermediary login (onbehalfof)', () => {
     }
   });
 
+  it('logs an intermediary in without the optional scope', async () => {
+    const base = await boot();
+    const res = await fetch(`${base}/connect/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', onbehalfof: SUPPLIER_A.tin },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: INTERMEDIARY.clientId,
+        client_secret: INTERMEDIARY.clientSecret,
+      }),
+    });
+    assertCorrelation(res);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { access_token: string; scope: string };
+    expect(body.scope).toBe('InvoicingAPI');
+    expect((await submitRaw(base, body.access_token, invoiceBody(SUPPLIER_A.tin, 'NOSCOPE'))).status).toBe(202);
+  });
+
   it('refuses the login itself in token mode', async () => {
     const base = await boot({ intermediaryDenial: 'token' });
     const denied = await tokenRequest(base, INTERMEDIARY.clientId, INTERMEDIARY.clientSecret, SUPPLIER_B_TIN);
