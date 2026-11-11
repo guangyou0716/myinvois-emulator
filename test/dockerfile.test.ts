@@ -24,6 +24,8 @@ describe('Dockerfile', () => {
     for (const ecosystem of ['docker', 'npm', 'github-actions']) {
       expect(dependabot).toContain(`package-ecosystem: ${ecosystem}`);
     }
+    // Every ecosystem ignores major bumps; majors are planned upgrades, not weekly noise.
+    expect(dependabot.match(/version-update:semver-major/g)).toHaveLength(3);
   });
 
   it('runs the compiled CLI as the unprivileged node user on all interfaces', () => {
