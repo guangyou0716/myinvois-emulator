@@ -1,11 +1,15 @@
 import { ID_ALPHABET, ID_LENGTH } from './constants.js';
 
 /**
- * mulberry32-style step. The same seed always yields the same sequence of
- * 26-character `[A-Z0-9]` ids.
+ * Mix a safe-integer seed into a nonzero uint32. `seed >>> 0` keeps only the
+ * low 32 bits, so seeds that differ by 2^32 would share a sequence. The high
+ * half is folded in first. When that half is zero, seeds that already fit in
+ * uint32 keep their previous sequence.
  */
 function mixSeed(seed: number): number {
-  let x = seed >>> 0;
+  const low = seed >>> 0;
+  const high = Math.trunc(seed / 2 ** 32) >>> 0;
+  let x = (low ^ Math.imul(high ^ (high >>> 16), 0x7feb352d)) >>> 0;
   x = Math.imul(x ^ (x >>> 16), 0x7feb352d);
   x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
   x = (x ^ (x >>> 16)) >>> 0;

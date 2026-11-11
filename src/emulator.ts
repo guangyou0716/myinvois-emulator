@@ -62,35 +62,67 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     const chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
-    const fail = (error: Error) => {
+
+    const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      reject(error);
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+      fn();
     };
-    req.on('data', (chunk: Buffer) => {
-      if (settled) return;
+
+    const onData = (chunk: Buffer) => {
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
-        fail(new BodyTooLargeError('request body exceeds the emulator limit'));
-        req.destroy();
+        finish(() => {
+          // Drop what we already held and pause. The handler responds, then closes.
+          chunks.length = 0;
+          req.pause();
+          req.on('error', () => undefined);
+          reject(new BodyTooLargeError('request body exceeds the emulator limit'));
+        });
         return;
       }
       chunks.push(chunk);
-    });
-    req.on('end', () => {
-      if (settled) return;
-      settled = true;
-      resolve(Buffer.concat(chunks));
-    });
-    req.on('error', (error) => {
-      fail(error);
-    });
+    };
+
+    const onEnd = () => {
+      finish(() => {
+        resolve(Buffer.concat(chunks));
+      });
+    };
+
+    const onError = (error: Error) => {
+      finish(() => {
+        reject(error);
+      });
+    };
+
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
   });
 }
 
 function decodePathSegment(segment: string): string | null {
   try {
     return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `new URL` accepts a target such as `/%ZZ` and leaves the bad escape in the
+ * path. `decodeURIComponent` throws on that, and `new URL` itself throws on
+ * other malformed targets. Both are client errors.
+ */
+function parseRequestTarget(rawTarget: string | undefined, hostHeader: string): URL | null {
+  const raw = rawTarget === undefined || rawTarget.length === 0 ? '/' : rawTarget;
+  try {
+    decodeURIComponent(raw);
+    return new URL(raw, `http://${hostHeader}`);
   } catch {
     return null;
   }
@@ -186,11 +218,29 @@ class EmulatorServer implements Emulator {
     this.boundHost = null;
   }
 
+  private invalidTarget(): EngineResult {
+    return {
+      status: 400,
+      body: errorBody(
+        standardError({
+          errorCode: this.config.errorCodes.invalidRequest,
+          error: 'Request target is malformed',
+          errorMS: 'Sasaran permintaan tidak sah',
+          target: 'url',
+        }),
+      ),
+    };
+  }
+
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const correlationId = this.correlationIds();
     try {
       const hostHeader = req.headers.host ?? this.preferredHost;
-      const url = new URL(req.url ?? '/', `http://${hostHeader}`);
+      const url = parseRequestTarget(req.url, hostHeader);
+      if (url === null) {
+        send(res, this.invalidTarget(), correlationId);
+        return;
+      }
       const result = await this.dispatch(req.method ?? 'GET', normalizePath(url.pathname), url, req);
       send(res, result, correlationId);
     } catch (error) {
@@ -211,6 +261,10 @@ class EmulatorServer implements Emulator {
             ),
           },
           correlationId,
+          () => {
+            // Response bytes are flushed. Close so the unread remainder is not buffered.
+            if (!req.destroyed) req.destroy();
+          },
         );
         return;
       }
@@ -342,7 +396,12 @@ function resolveClock(clock: EmulatorOptions['clock']): Clock {
   return clock;
 }
 
-function send(res: ServerResponse, result: EngineResult, correlationId: string): void {
+function send(
+  res: ServerResponse,
+  result: EngineResult,
+  correlationId: string,
+  onFinish?: () => void,
+): void {
   const headers: Record<string, string | number> = {
     correlationId,
     connection: 'close',
@@ -350,10 +409,13 @@ function send(res: ServerResponse, result: EngineResult, correlationId: string):
   };
   if (result.body === null || result.body === undefined) {
     res.writeHead(result.status, headers);
-    res.end();
+    if (onFinish) res.end(onFinish);
+    else res.end();
     return;
   }
   headers['content-type'] = 'application/json; charset=utf-8';
   res.writeHead(result.status, headers);
-  res.end(JSON.stringify(result.body));
+  const payload = JSON.stringify(result.body);
+  if (onFinish) res.end(payload, onFinish);
+  else res.end(payload);
 }

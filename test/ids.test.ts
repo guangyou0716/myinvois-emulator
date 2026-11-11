@@ -25,6 +25,13 @@ describe('id generator', () => {
     expect(createIdGenerator(42)()).not.toBe(createIdGenerator(43)());
   });
 
+  it('mixes both 32-bit halves so seeds 2^32 apart differ', () => {
+    const low = createIdGenerator(1)();
+    const high = createIdGenerator(1 + 2 ** 32)();
+    expect(high).not.toBe(low);
+    expect(createIdGenerator(1 + 2 ** 32)()).toBe(high);
+  });
+
   it('accepts a zero seed', () => {
     expect(createIdGenerator(0)()).toMatch(/^[A-Z0-9]{26}$/);
   });
