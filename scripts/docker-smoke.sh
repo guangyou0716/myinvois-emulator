@@ -34,8 +34,18 @@ status="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base/api/v1.0/documen
   -H "authorization: Bearer $token" -H 'content-type: application/json' --data "$body")"
 test "$status" = 202
 
-health="$(docker inspect --format '{{.State.Health.Status}}' "$NAME")"
+# The image HEALTHCHECK probes every 10s; wait until Docker reports it healthy.
+health=starting
+for _ in $(seq 1 45); do
+  health="$(docker inspect --format '{{.State.Health.Status}}' "$NAME")"
+  if [ "$health" != starting ]; then break; fi
+  sleep 1
+done
 echo "container health: $health"
+if [ "$health" != healthy ]; then
+  docker inspect --format '{{json .State.Health}}' "$NAME" >&2
+  exit 1
+fi
 
 # A clean SIGTERM shutdown should exit 0 well within docker's 10-second grace period.
 docker stop -t 10 "$NAME" >/dev/null
