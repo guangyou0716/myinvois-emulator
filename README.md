@@ -14,7 +14,7 @@ npm run build
 node dist/cli.js start --port 8787 --host 127.0.0.1 --seed 42 --clock fake
 ```
 
-Rate limits are on by default. Pass `--no-rate-limit` to disable them, or `--rpm-scale 0.5` to halve every per-endpoint RPM.
+Rate limits are on by default. Pass `--no-rate-limit` to disable them, or `--rpm-scale 0.5` to halve every per-endpoint RPM. Pass `--faults fixtures/faults/500-storm.json` to inject reproducible 500s, latency, 429s, or dropped connections.
 
 The process prints `myinvois-emulator listening on http://127.0.0.1:8787`.
 
@@ -43,6 +43,7 @@ const emulator = createEmulator({
   seed: 42,
   clock: 'fake',
   rateLimit: { enabled: true, scale: 1 },
+  faults: [{ endpoint: 'submit', kind: 'error500', nth: [2] }],
 });
 const { url } = await emulator.start({ port: 0, host: '127.0.0.1' });
 await emulator.stop();
@@ -174,6 +175,64 @@ createEmulator({
 
 `scale` must be a finite number greater than 0. CLI: `--rpm-scale <n>` and `--no-rate-limit`. `POST /_emulator/reset` also clears rate-limit counters.
 
+## Fault injection
+
+Integrators can replay 500s, extra latency, fake 429s, and dropped connections against the same seed and request sequence.
+
+Each rule is:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `endpoint` | yes | One of the rate-limit keys (`token`, `submit`, `getSubmission`, `cancelReject`, `getDocument`, `getDocumentDetails`, `validateTin`) or `*` |
+| `kind` | yes | `error500`, `latency`, `rateLimit429`, or `reset` |
+| `probability` | one of `probability` or `nth` | Inclusive `0..1`. A seeded PRNG decides each matching request |
+| `nth` | one of `probability` or `nth` | Array of 1-based request counts for that endpoint since faults were set or reset |
+| `latencyMs` | `latency` only | Integer `0..60000`. Delay uses a real `setTimeout`, including when the emulator clock is fake |
+| `retryAfterSeconds` | `rateLimit429` optional | Positive integer for `Retry-After`. Default `60` |
+
+Kinds:
+
+- `error500` — HTTP `500` with the standard envelope, `errorCode` `SystemError`, English + Malay messages, and `correlationId`.
+- `rateLimit429` — same envelope and `Retry-After` / `X-Rate-Limit-*` headers as a real RPM 429. It does **not** consume the real rate-limit counters.
+- `latency` — wait `latencyMs` on the wall clock, then continue. Matching latency stacks with a later non-latency fault on the same request, or with a normal response if none matches.
+- `reset` — destroy the socket without writing a response.
+
+Rules are evaluated before normal handling. The first matching non-latency rule wins. A matching latency rule applies its delay and the scan continues. `/_emulator/*` is never faulted.
+
+Probability draws come from a mulberry32 stream derived from `--seed` (the same mixer as document ids, a separate stream). The same seed and the same request sequence produce the same faults.
+
+Library option `faults`:
+
+```js
+createEmulator({
+  seed: 42,
+  faults: [
+    { endpoint: 'submit', kind: 'error500', nth: [2] },
+    { endpoint: '*', kind: 'latency', latencyMs: 50, probability: 0.25 },
+  ],
+});
+```
+
+CLI: `--faults fixtures/faults/500-storm.json`. The file is a JSON array of rules or `{ "faults": [...] }`. Invalid rules throw at `createEmulator` and make the CLI exit nonzero.
+
+Runtime control:
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/_emulator/faults` | JSON array or `{ "faults": [...] }` | Replace rules, reset per-endpoint fault counters, return `{ "faults": [...] }`. `400` envelope when a rule is invalid (existing rules stay). |
+| GET | `/_emulator/faults` | | Current rules. |
+| DELETE | `/_emulator/faults` | | Clear rules and their counters. |
+
+`POST /_emulator/reset` clears per-endpoint fault counters and keeps the rules.
+
+Example files, also loaded by tests:
+
+- `fixtures/faults/500-storm.json` — `*` `error500` at probability `0.5`
+- `fixtures/faults/latency.json` — `250ms` on every submit
+- `fixtures/faults/429.json` — fake 429 on the first three submits, `Retry-After: 30`
+
+Pending latency timers are cancelled when the server stops, so a delayed request cannot outlive `emulator.stop()`.
+
 ## Control endpoints
 
 No bearer token. They are how tests move time without sleeping.
@@ -181,9 +240,12 @@ No bearer token. They are how tests move time without sleeping.
 | Method | Path | Body | Result |
 |---|---|---|---|
 | POST | `/_emulator/clock/advance` | `{ "ms": 7200000 }` | Moves a fake clock forward by a non-negative integer number of milliseconds and settles due validations. `400` when the clock is real. |
-| POST | `/_emulator/reset` | empty | Drops tokens, submissions, documents, the duplicate-body window, and rate-limit counters. Does not rewind the clock. |
+| POST | `/_emulator/reset` | empty | Drops tokens, submissions, documents, the duplicate-body window, rate-limit counters, and per-endpoint fault counters (keeps fault rules). Does not rewind the clock. |
 | GET | `/_emulator/state` | | Submissions, documents (including the original text), `now`, clock mode, and seed. No client secrets. |
 | GET | `/_emulator/health` | | `{ "status": "ok", "clock": "fake" \| "real", "now": "..." }`. |
+| POST | `/_emulator/faults` | JSON array or `{ "faults": [...] }` | Replace fault rules and reset per-endpoint fault counters. `200` `{ "faults": [...] }`. `400` when a rule is invalid. |
+| GET | `/_emulator/faults` | | Current fault rules. |
+| DELETE | `/_emulator/faults` | | Clear fault rules and reset their counters. |
 
 ## Config file
 
@@ -280,11 +342,12 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 
 `fixtures/samples/` holds unmodified public LHDN Invoice 1.0 and 1.1 JSON and XML samples. Provenance is in `fixtures/samples/SOURCE.md` (`https://sdk.myinvois.hasil.gov.my/`). Oversize payloads are built in tests and are not committed.
 
+`fixtures/faults/` holds example fault-rule files for `--faults` and `POST /_emulator/faults`.
+
 ## Roadmap
 
 Not in this increment:
 
-- Fault injection (`--faults`, `POST /_emulator/faults`, reproducible 500 / latency / 429)
 - Official Postman collection and newman contract tests
 - `--validator precheck` (shell out to the myinvois-precheck CLI; not an npm dependency)
 - Intermediary login and the `onbehalfof` header

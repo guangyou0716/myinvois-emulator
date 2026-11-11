@@ -28,6 +28,8 @@ export type {
 } from './state-machine.js';
 export { errorBody, invalidDocumentError, standardError } from './errors.js';
 export type { StandardError } from './errors.js';
+export { FaultError, loadFaultsFile, parseFaults } from './faults.js';
+export type { FaultAction, FaultEndpoint, FaultKind, FaultRule } from './faults.js';
 export { defaultConfig, DEFAULT_TENANTS } from './defaults.js';
 export { loadConfigFile, parseConfig, resolveConfig, ConfigError } from './config.js';
 export type { EmulatorConfig, ResolvedConfig, TenantConfig, TenantRole } from './config.js';

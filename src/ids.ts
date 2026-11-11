@@ -6,7 +6,7 @@ import { ID_ALPHABET, ID_LENGTH } from './constants.js';
  * half is folded in first. When that half is zero, seeds that already fit in
  * uint32 keep their previous sequence.
  */
-function mixSeed(seed: number): number {
+export function mixSeed(seed: number): number {
   const low = seed >>> 0;
   const high = Math.trunc(seed / 2 ** 32) >>> 0;
   let x = (low ^ Math.imul(high ^ (high >>> 16), 0x7feb352d)) >>> 0;

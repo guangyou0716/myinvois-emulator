@@ -1,0 +1,9 @@
+{
+  "faults": [
+    {
+      "endpoint": "*",
+      "kind": "error500",
+      "probability": 0.5
+    }
+  ]
+}
