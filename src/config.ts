@@ -16,7 +16,20 @@ export interface TenantConfig {
   clientSecret: string;
   idType: string;
   idValue: string;
+  /**
+   * Intermediary only: the taxpayer authorization table. Each entry is the
+   * exact `onbehalfof` value this intermediary may log in with, either `TIN`
+   * or `TIN:ROB`. The TIN part must be another configured tenant.
+   */
+  representedTins?: string[];
 }
+
+/**
+ * What happens when an intermediary logs in with an `onbehalfof` value it is
+ * not authorized for. `api` issues the token and every API call with it
+ * returns 403 IncorrectSubmitter; `token` refuses the login with that error.
+ */
+export type IntermediaryDenial = 'api' | 'token';
 
 export interface ErrorCodeMap {
   operationPeriodOver: string;
@@ -51,6 +64,7 @@ export interface EmulatorConfig {
   duplicateWindowMs?: number;
   cancelWindowMs?: number;
   tokenTtlSeconds?: number;
+  intermediaryDenial?: IntermediaryDenial;
   errorCodes?: Partial<ErrorCodeMap>;
   statusCodes?: Partial<StatusCodeMap>;
   tenants?: TenantConfig[];
@@ -61,6 +75,7 @@ export interface ResolvedConfig {
   duplicateWindowMs: number;
   cancelWindowMs: number;
   tokenTtlSeconds: number;
+  intermediaryDenial: IntermediaryDenial;
   errorCodes: ErrorCodeMap;
   statusCodes: StatusCodeMap;
   tenants: TenantConfig[];
@@ -99,15 +114,31 @@ function readTenant(value: unknown, label: string): TenantConfig {
   if (typeof value.role !== 'string' || !ROLES.has(value.role as TenantRole)) {
     throw new ConfigError(`${label}.role must be supplier, buyer, or intermediary`);
   }
-  return {
-    tin,
-    name,
-    role: value.role as TenantRole,
-    clientId,
-    clientSecret,
-    idType,
-    idValue,
-  };
+  const role = value.role as TenantRole;
+  const tenant: TenantConfig = { tin, name, role, clientId, clientSecret, idType, idValue };
+  if (value.representedTins !== undefined) {
+    if (role !== 'intermediary') {
+      throw new ConfigError(`${label}.representedTins is only allowed for role intermediary`);
+    }
+    if (!Array.isArray(value.representedTins)) {
+      throw new ConfigError(`${label}.representedTins must be an array of strings`);
+    }
+    const entries = value.representedTins.map((entry, index) =>
+      readText(entry, `${label}.representedTins[${index}]`),
+    );
+    if (new Set(entries).size !== entries.length) {
+      throw new ConfigError(`${label}.representedTins has duplicate entries`);
+    }
+    tenant.representedTins = entries;
+  }
+  return tenant;
+}
+
+/** Split an `onbehalfof` value (`TIN` or `TIN:ROB`) into its parts. */
+export function splitOnBehalfOf(value: string): { tin: string; rob: string | null } {
+  const index = value.indexOf(':');
+  if (index < 0) return { tin: value.trim(), rob: null };
+  return { tin: value.slice(0, index).trim(), rob: value.slice(index + 1).trim() };
 }
 
 function readText(value: unknown, label: string): string {
@@ -132,6 +163,20 @@ function readTenants(value: unknown, source: string): TenantConfig[] {
     tins.add(tenant.tin);
     clientIds.add(tenant.clientId);
   }
+  for (const tenant of tenants) {
+    for (const entry of tenant.representedTins ?? []) {
+      const { tin, rob } = splitOnBehalfOf(entry);
+      if (tin === '' || rob === '') {
+        throw new ConfigError(`${source}: ${tenant.clientId} representedTins entry ${entry} must be TIN or TIN:ROB`);
+      }
+      if (tin === tenant.tin) {
+        throw new ConfigError(`${source}: ${tenant.clientId} cannot represent its own TIN`);
+      }
+      if (!tins.has(tin)) {
+        throw new ConfigError(`${source}: ${tenant.clientId} represents unknown tenant TIN ${tin}`);
+      }
+    }
+  }
   return tenants;
 }
 
@@ -151,6 +196,12 @@ export function parseConfig(value: unknown, source = 'config'): EmulatorConfig {
     const ttl = readNonNegativeInt(value.tokenTtlSeconds, `${source}: tokenTtlSeconds`);
     if (ttl < 1) throw new ConfigError(`${source}: tokenTtlSeconds must be at least 1`);
     config.tokenTtlSeconds = ttl;
+  }
+  if (value.intermediaryDenial !== undefined) {
+    if (value.intermediaryDenial !== 'api' && value.intermediaryDenial !== 'token') {
+      throw new ConfigError(`${source}: intermediaryDenial must be api or token`);
+    }
+    config.intermediaryDenial = value.intermediaryDenial;
   }
   if (value.errorCodes !== undefined) {
     if (!isRecord(value.errorCodes)) throw new ConfigError(`${source}: errorCodes must be an object`);
@@ -210,8 +261,12 @@ export function resolveConfig(override?: EmulatorConfig): ResolvedConfig {
     duplicateWindowMs,
     cancelWindowMs,
     tokenTtlSeconds,
+    intermediaryDenial: merged.intermediaryDenial ?? base.intermediaryDenial ?? 'api',
     errorCodes: { ...DEFAULT_ERROR_CODES, ...base.errorCodes, ...merged.errorCodes },
     statusCodes: { ...DEFAULT_STATUS_CODES, ...base.statusCodes, ...merged.statusCodes },
-    tenants: (merged.tenants ?? base.tenants ?? DEFAULT_TENANTS).map((tenant) => ({ ...tenant })),
+    tenants: (merged.tenants ?? base.tenants ?? DEFAULT_TENANTS).map((tenant) => ({
+      ...tenant,
+      ...(tenant.representedTins ? { representedTins: [...tenant.representedTins] } : {}),
+    })),
   };
 }

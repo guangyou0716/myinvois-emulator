@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { Clock } from './clock.js';
 import { isAdjustableClock } from './clock.js';
 import { MAX_PAGE_SIZE, MAX_REASON_LENGTH } from './constants.js';
-import type { ResolvedConfig, TenantConfig } from './config.js';
+import { splitOnBehalfOf, type ResolvedConfig, type TenantConfig } from './config.js';
 import {
   inspectDocument,
   validateNone,
@@ -35,10 +35,20 @@ export interface EngineResult {
 
 interface IssuedToken {
   token: string;
-  tenantTin: string;
+  /** Client that logged in (the intermediary itself for an intermediary login). */
   clientId: string;
+  /** Taxpayer TIN the token acts for; null when an intermediary login was denied. */
+  actingTin: string | null;
+  /** The `onbehalfof` value used at login, or null for a direct login. */
+  onBehalfOf: string | null;
   scope: string;
   expiresAt: number;
+}
+
+/** Who an authenticated API call acts for, and the intermediary acting for them (if any). */
+export interface AuthContext {
+  tenant: TenantConfig;
+  intermediary: TenantConfig | null;
 }
 
 interface StoredDocument {
@@ -52,6 +62,9 @@ interface StoredDocument {
   buyerTin: string | null;
   submitterTin: string;
   createdByUserId: string;
+  intermediaryTin: string | null;
+  intermediaryName: string | null;
+  intermediaryRob: string | null;
   inspection: DocumentInspection;
   status: DocumentStatus;
   /** null while Submitted. True when validation passed, including after cancel/reject. */
@@ -209,7 +222,7 @@ export class EmulatorEngine {
     return { status: 200, body: { now: iso(this.clock.now()), nowMs: this.clock.now() } };
   }
 
-  issueToken(form: URLSearchParams): EngineResult {
+  issueToken(form: URLSearchParams, onBehalfOfHeader: string | null = null): EngineResult {
     const grantType = form.get('grant_type');
     const clientId = form.get('client_id');
     const clientSecret = form.get('client_secret');
@@ -265,12 +278,31 @@ export class EmulatorEngine {
         ),
       };
     }
+    let actingTin: string | null = tenant.tin;
+    let onBehalfOf: string | null = null;
+    if (onBehalfOfHeader !== null) {
+      onBehalfOf = onBehalfOfHeader.trim();
+      if (onBehalfOf === '') {
+        return this.invalidOnBehalfOf('onbehalfof must not be empty', 'onbehalfof tidak boleh kosong');
+      }
+      if (tenant.role !== 'intermediary') {
+        return this.invalidOnBehalfOf(
+          'onbehalfof is only accepted for intermediary clients',
+          'onbehalfof hanya diterima untuk klien perantara',
+        );
+      }
+      actingTin = this.representedTin(tenant, onBehalfOf);
+      if (actingTin === null && this.config.intermediaryDenial === 'token') {
+        return this.notRepresented();
+      }
+    }
     const token = this.ids();
     const now = this.clock.now();
     this.tokens.set(token, {
       token,
-      tenantTin: tenant.tin,
       clientId: tenant.clientId,
+      actingTin,
+      onBehalfOf,
       scope: scope ?? '',
       expiresAt: now + this.config.tokenTtlSeconds * 1000,
     });
@@ -285,15 +317,56 @@ export class EmulatorEngine {
     };
   }
 
-  authenticate(token: string | null): { ok: true; tenant: TenantConfig } | { ok: false; result: EngineResult } {
+  authenticate(token: string | null): ({ ok: true } & AuthContext) | { ok: false; result: EngineResult } {
     if (token === null) return { ok: false, result: this.unauthorized() };
     const issued = this.tokens.get(token);
     if (!issued || this.clock.now() >= issued.expiresAt) return { ok: false, result: this.unauthorized() };
-    const tenant = this.config.tenants.find(
-      (item) => item.tin === issued.tenantTin && item.clientId === issued.clientId,
-    );
+    const client = this.config.tenants.find((item) => item.clientId === issued.clientId);
+    if (!client) return { ok: false, result: this.unauthorized() };
+    if (issued.actingTin === null) return { ok: false, result: this.notRepresented() };
+    const tenant = this.config.tenants.find((item) => item.tin === issued.actingTin);
     if (!tenant) return { ok: false, result: this.unauthorized() };
-    return { ok: true, tenant };
+    return { ok: true, tenant, intermediary: issued.onBehalfOf === null ? null : client };
+  }
+
+  /** Acting TIN when the intermediary's authorization table lists this exact value; otherwise null. */
+  private representedTin(intermediary: TenantConfig, onBehalfOf: string): string | null {
+    if (!(intermediary.representedTins ?? []).includes(onBehalfOf)) return null;
+    const { tin } = splitOnBehalfOf(onBehalfOf);
+    if (tin === intermediary.tin) return null;
+    return this.config.tenants.some((item) => item.tin === tin) ? tin : null;
+  }
+
+  private invalidOnBehalfOf(error: string, errorMS: string): EngineResult {
+    return {
+      status: this.config.statusCodes.missingParameters,
+      body: errorBody(
+        standardError({
+          propertyName: 'onbehalfof',
+          propertyPath: 'onbehalfof',
+          errorCode: this.config.errorCodes.invalidRequest,
+          error,
+          errorMS,
+          target: 'onbehalfof',
+        }),
+      ),
+    };
+  }
+
+  private notRepresented(): EngineResult {
+    return {
+      status: this.config.statusCodes.incorrectSubmitter,
+      body: errorBody(
+        standardError({
+          propertyName: 'onbehalfof',
+          propertyPath: 'onbehalfof',
+          errorCode: this.config.errorCodes.incorrectSubmitter,
+          error: 'The intermediary is not authorized to act on behalf of this taxpayer',
+          errorMS: 'Perantara tidak diberi kuasa untuk bertindak bagi pihak pembayar cukai ini',
+          target: 'onbehalfof',
+        }),
+      ),
+    };
   }
 
   /** Client id for a currently valid bearer token; null when missing, unknown, or expired. */
@@ -318,7 +391,11 @@ export class EmulatorEngine {
     };
   }
 
-  async submit(rawBody: Buffer, tenant: TenantConfig): Promise<EngineResult> {
+  async submit(
+    rawBody: Buffer,
+    tenant: TenantConfig,
+    intermediary: TenantConfig | null = null,
+  ): Promise<EngineResult> {
     this.settle();
     const now = this.clock.now();
     const bodyHash = sha256Hex(rawBody);
@@ -459,7 +536,10 @@ export class EmulatorEngine {
         supplierTin: entry.inspection.supplierTin,
         buyerTin: entry.inspection.buyerTin,
         submitterTin: tenant.tin,
-        createdByUserId: tenant.clientId,
+        createdByUserId: intermediary?.clientId ?? tenant.clientId,
+        intermediaryTin: intermediary?.tin ?? null,
+        intermediaryName: intermediary?.name ?? null,
+        intermediaryRob: intermediary !== null && intermediary.idType.toUpperCase() === 'BRN' ? intermediary.idValue : null,
         inspection: entry.inspection,
         status: 'Submitted',
         validationOk: null,
@@ -812,6 +892,9 @@ export class EmulatorEngine {
       rejectAt: doc.rejectAt,
       statusReason: doc.statusReason,
       createdByUserId: doc.createdByUserId,
+      intermediaryTin: doc.intermediaryTin,
+      intermediaryName: doc.intermediaryName,
+      intermediaryRob: doc.intermediaryRob,
       inspection: doc.inspection,
     };
   }

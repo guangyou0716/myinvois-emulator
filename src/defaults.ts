@@ -102,6 +102,7 @@ export const DEFAULT_TENANTS: readonly TenantConfig[] = [
     clientSecret: 'intermediary-a-secret',
     idType: 'BRN',
     idValue: '202101000001',
+    representedTins: ["Supplier's TIN", 'C00000000000'],
   },
 ];
 
@@ -111,8 +112,12 @@ export function defaultConfig(): EmulatorConfig {
     duplicateWindowMs: DUPLICATE_WINDOW_MS,
     cancelWindowMs: CANCEL_WINDOW_MS,
     tokenTtlSeconds: DEFAULT_TOKEN_TTL_SECONDS,
+    intermediaryDenial: 'api',
     errorCodes: { ...DEFAULT_ERROR_CODES },
     statusCodes: { ...DEFAULT_STATUS_CODES },
-    tenants: DEFAULT_TENANTS.map((tenant) => ({ ...tenant })),
+    tenants: DEFAULT_TENANTS.map((tenant) => ({
+      ...tenant,
+      ...(tenant.representedTins ? { representedTins: [...tenant.representedTins] } : {}),
+    })),
   };
 }

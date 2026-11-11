@@ -50,6 +50,9 @@ export interface QueryDocument {
   rejectAt: number | null;
   statusReason: string | null;
   createdByUserId: string;
+  intermediaryTin: string | null;
+  intermediaryName: string | null;
+  intermediaryRob: string | null;
   inspection: DocumentInspection;
 }
 
@@ -517,9 +520,9 @@ export function querySummary(doc: QueryDocument): QuerySummary {
     supplierTin: doc.supplierTin,
     supplierName: inspection.supplierName,
     submissionChannel: SUBMISSION_CHANNEL,
-    intermediaryName: null,
-    intermediaryTin: null,
-    intermediaryRob: null,
+    intermediaryName: doc.intermediaryName,
+    intermediaryTin: doc.intermediaryTin,
+    intermediaryRob: doc.intermediaryRob,
     buyerName: inspection.buyerName,
     buyerTIN: doc.buyerTin,
     buyerTin: doc.buyerTin,

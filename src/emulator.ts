@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { FakeClock, RealClock, isAdjustableClock, type Clock } from './clock.js';
 import { FAKE_CLOCK_START_MS, MAX_BODY_BYTES, RATE_LIMIT_WINDOW_MS } from './constants.js';
 import { resolveConfig, type EmulatorConfig, type ResolvedConfig, type TenantConfig } from './config.js';
-import { EmulatorEngine, type EngineResult } from './engine.js';
+import { EmulatorEngine, type AuthContext, type EngineResult } from './engine.js';
 import { errorBody, standardError } from './errors.js';
 import { FaultError, FaultInjector, parseFaults, type FaultAction, type FaultRule } from './faults.js';
 import { createIdGenerator } from './ids.js';
@@ -357,7 +357,9 @@ class EmulatorServer implements Emulator {
       const form = new URLSearchParams(raw.toString('utf8'));
       const clientId = form.get('client_id');
       const identity = clientId !== null && clientId.trim() !== '' ? clientId : RATE_LIMIT_UNAUTHENTICATED;
-      return this.limited(identity, 'token', () => this.engine.issueToken(form));
+      const header = req.headers.onbehalfof;
+      const onBehalfOf = header === undefined ? null : Array.isArray(header) ? header.join(', ') : header;
+      return this.limited(identity, 'token', () => this.engine.issueToken(form, onBehalfOf));
     }
     if (path === '/_emulator/health') {
       if (method !== 'GET' && method !== 'HEAD') return this.engine.methodNotAllowed('GET');
@@ -415,9 +417,9 @@ class EmulatorServer implements Emulator {
 
     if (path === '/api/v1.0/documentsubmissions') {
       if (method !== 'POST') return this.engine.methodNotAllowed('POST');
-      return this.limitedApi(req, 'submit', async (tenant) => {
+      return this.limitedApi(req, 'submit', async (tenant, auth) => {
         const raw = await readBody(req);
-        return this.engine.submit(raw, tenant);
+        return this.engine.submit(raw, tenant, auth.intermediary);
       });
     }
     if (submissionUid) {
@@ -478,7 +480,7 @@ class EmulatorServer implements Emulator {
     return this.engine.notFound('Path was not found');
   }
 
-  private authorize(req: IncomingMessage): { ok: true; tenant: TenantConfig } | { ok: false; result: EngineResult } {
+  private authorize(req: IncomingMessage): ({ ok: true } & AuthContext) | { ok: false; result: EngineResult } {
     const header = req.headers.authorization;
     const value = Array.isArray(header) ? header[0] : header;
     return this.engine.authenticate(bearerToken(value));
@@ -511,13 +513,13 @@ class EmulatorServer implements Emulator {
   private async limitedApi(
     req: IncomingMessage,
     endpoint: RateLimitEndpoint,
-    run: (tenant: TenantConfig) => EngineResult | Promise<EngineResult>,
+    run: (tenant: TenantConfig, auth: AuthContext) => EngineResult | Promise<EngineResult>,
   ): Promise<EngineResult> {
     const gate = this.consume(this.clientIdentity(req), endpoint);
     if (gate.blocked) return gate.result;
     const auth = this.authorize(req);
     if (!auth.ok) return withHeaders(auth.result, gate.headers);
-    return withHeaders(await run(auth.tenant), gate.headers);
+    return withHeaders(await run(auth.tenant, auth), gate.headers);
   }
 
   private applyFault(

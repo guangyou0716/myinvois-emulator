@@ -4,6 +4,7 @@
   "duplicateWindowMs": 600000,
   "cancelWindowMs": 259200000,
   "tokenTtlSeconds": 3600,
+  "intermediaryDenial": "api",
   "errorCodes": {
     "operationPeriodOver": "OperationPeriodOver",
     "incorrectState": "IncorrectState",
@@ -94,7 +95,11 @@
       "clientSecret": "intermediary-a-secret",
       "idType": "BRN",
       "idValue": "202101000001",
-      "description": "Present for TIN lookup. onbehalfof login is not implemented in this increment."
+      "description": "Present for TIN lookup. onbehalfof login is not implemented in this increment.",
+      "representedTins": [
+        "Supplier's TIN",
+        "C00000000000"
+      ]
     }
   ]
 }

@@ -16,6 +16,8 @@ export const SYNTHETIC = {
   taxpayerClientSecret: 'sample-supplier-secret',
   intermediaryClientId: 'intermediary-a',
   intermediaryClientSecret: 'intermediary-a-secret',
+  /** A taxpayer the built-in intermediary is authorized to represent. */
+  intermediaryOnBehalfOf: 'C00000000000',
   tin: 'C00000000000',
   idType: 'BRN',
   idValue: '201901000001',
@@ -28,8 +30,9 @@ export const SYNTHETIC = {
 
 /**
  * Official collection request names that must run, in dependency order.
- * Login as Intermediary System returns 200 because the emulator ignores the
- * onbehalfof header and still issues a token for valid built-in credentials.
+ * Login as Intermediary System returns 200: the runner replaces the
+ * collection's onbehalfof value with a taxpayer that the built-in
+ * intermediary is authorized to represent.
  * Reject Document is 400 because this sequence cancels the same uuid first
  * (supplier token, already Cancelled → IncorrectState).
  */
@@ -38,7 +41,7 @@ export const IN_SCOPE = [
   {
     name: 'Login as Intermediary System',
     expectedStatus: 200,
-    note: 'emulator does not implement onbehalfof; the header is ignored and a token is issued for valid built-in intermediary credentials',
+    note: 'onbehalfof is set to a taxpayer the built-in intermediary is authorized to represent',
   },
   { name: 'Validate taxpayer TIN', expectedStatus: 200 },
   { name: 'Submit Documents', expectedStatus: 202, capture: 'submission' },
@@ -117,6 +120,7 @@ export function findMissingInScope(collection) {
  *   taxpayerClientSecret?: string,
  *   intermediaryClientId?: string,
  *   intermediaryClientSecret?: string,
+ *   intermediaryOnBehalfOf?: string,
  *   tin?: string,
  *   idType?: string,
  *   idValue?: string,
@@ -248,6 +252,11 @@ function transformRequestItem(item, spec, options, fills) {
       options.intermediaryClientId ?? SYNTHETIC.intermediaryClientId,
       options.intermediaryClientSecret ?? SYNTHETIC.intermediaryClientSecret,
     );
+    request.header = setHeader(
+      request.header,
+      'onbehalfof',
+      options.intermediaryOnBehalfOf ?? SYNTHETIC.intermediaryOnBehalfOf,
+    );
   } else if (spec.name === 'Submit Documents') {
     request.body = {
       mode: 'raw',
@@ -305,6 +314,14 @@ function fillLoginBody(request, clientId, clientSecret) {
     else if (next.key === 'client_secret') next.value = clientSecret;
     return next;
   });
+}
+
+function setHeader(headers, key, value) {
+  const list = Array.isArray(headers)
+    ? headers.filter((header) => String(header.key).toLowerCase() !== key.toLowerCase()).map((header) => ({ ...header }))
+    : [];
+  list.push({ key, value, type: 'text' });
+  return list;
 }
 
 function ensureHeader(headers, key, value) {
