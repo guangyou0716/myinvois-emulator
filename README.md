@@ -41,7 +41,7 @@ docker run --rm -p 127.0.0.1:8787:8787 myinvois-emulator
 docker run --rm -p 127.0.0.1:8787:8787 myinvois-emulator start --host 0.0.0.0 --port 8787 --clock fake --seed 42
 ```
 
-The image is `node:20-alpine` (pinned by digest), runs as the `node` user, contains only `dist/`, `package.json` and `fixtures/` (so `--config fixtures/tenants.json` works), and has a `HEALTHCHECK` on `/_emulator/health` at port 8787. Mount your own config with `-v "$PWD/emulator.json:/app/emulator.json:ro"` and add `--config emulator.json`. `scripts/docker-smoke.sh` builds the image, checks health, a token, a submit and a clean `docker stop`; CI runs it on every pull request and on pushes to main.
+The image is `node:20-alpine` (pinned by digest), runs as the `node` user, contains only `dist/`, `package.json` and `fixtures/` (so `--config fixtures/tenants.json` works), and has a `HEALTHCHECK` on `/_emulator/health` at port 8787. Mount your own config with `-v "$PWD/emulator.json:/app/emulator.json:ro"` and add `--config emulator.json`. `scripts/docker-smoke.sh` builds the image, checks health, a token, a submit, that Docker reports the `HEALTHCHECK` as `healthy`, and a clean `docker stop`; CI runs it on every pull request and on pushes to main.
 
 With `--clock fake` (or `clock: 'fake'` in `createEmulator`), time does not move until you post to `/_emulator/clock/advance`. Validation therefore stays `in progress` until you advance at least `validationDelayMs` (default 2000). The default CLI clock is `real`: validation completes after two seconds of wall time, and the advance endpoint returns 400.
 
