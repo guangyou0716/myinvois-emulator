@@ -14,7 +14,7 @@ npm run build
 node dist/cli.js start --port 8787 --host 127.0.0.1 --seed 42 --clock fake
 ```
 
-Rate limits are on by default. Pass `--no-rate-limit` to disable them, or `--rpm-scale 0.5` to halve every per-endpoint RPM. Pass `--faults fixtures/faults/500-storm.json` to inject reproducible 500s, latency, 429s, or dropped connections.
+Rate limits are on by default. Pass `--no-rate-limit` to disable them, or `--rpm-scale 0.5` to halve every per-endpoint RPM. Pass `--faults fixtures/faults/500-storm.json` to inject reproducible 500s, latency, 429s, or dropped connections. Pass `--validator precheck --precheck-cmd "node /path/to/myinvois-precheck/dist/cli.js --json"` to validate with the separate myinvois-precheck CLI (not an npm dependency; you must build it yourself).
 
 The process prints `myinvois-emulator listening on http://127.0.0.1:8787`.
 
@@ -44,6 +44,7 @@ const emulator = createEmulator({
   clock: 'fake',
   rateLimit: { enabled: true, scale: 1 },
   faults: [{ endpoint: 'submit', kind: 'error500', nth: [2] }],
+  validator: 'none',
 });
 const { url } = await emulator.start({ port: 0, host: '127.0.0.1' });
 await emulator.stop();
@@ -146,9 +147,44 @@ Only a `Valid` document can be cancelled or rejected, and only while `now <= dat
 
 The supplier TIN on the document may cancel. The buyer TIN may reject. The other direction, or any other state (`Submitted`, `Invalid`, `Cancelled`, `Rejected`), returns `IncorrectState`. Wrong state wins over the window, so cancelling an `Invalid` document is `IncorrectState` even after 72 hours.
 
-### Validator `none`
+### Validators
 
-The only validator in this increment. A document becomes `Valid` when it is parseable JSON or XML and the root is `Invoice` (a namespace prefix is ignored). Anything else, including a credit note, becomes `Invalid` with `validationResults.validationSteps[].error.innerError[]`. XML that contains `<!DOCTYPE` or `<!ENTITY` is treated as not parseable.
+Every accepted document still has to pass the structural Invoice-root check. A credit note, unparseable payload, or XML that contains `<!DOCTYPE` or `<!ENTITY` becomes `Invalid` with `validationResults.validationSteps[].error.innerError[]` (`InvalidStructure`) and never shells out.
+
+`none` (default). After the validation delay, a parseable JSON or XML document whose root is `Invoice` (a namespace prefix is ignored) becomes `Valid`. That is the whole rule set.
+
+`precheck`. After the Invoice-root check, the emulator writes the decoded document to a fresh temp file (`.json` or `.xml` from the submission format) and runs a user-supplied command with `child_process.spawn` (no shell). The last argument is the temp path. The command must be the myinvois-precheck CLI in JSON mode, for example `node dist/cli.js --json`. myinvois-precheck is a **separate private tool**; this package does not depend on it, and you have to build it yourself.
+
+Library:
+
+```js
+createEmulator({
+  validator: {
+    kind: 'precheck',
+    command: ['node', '/path/to/myinvois-precheck/dist/cli.js', '--json'],
+    timeoutMs: 10000, // optional, default 10000
+  },
+});
+```
+
+CLI:
+
+```bash
+node dist/cli.js start --validator precheck --precheck-cmd "node /path/to/myinvois-precheck/dist/cli.js --json"
+```
+
+`--precheck-cmd` is required when `--validator precheck`. The string is split with a small quote-aware argv splitter (single and double quotes; no `$VAR`, `~`, or glob expansion). An empty or missing command, or `--validator` other than `none`/`precheck`, is a startup error and the process exits nonzero.
+
+Mapping of a parseable JSON report (exit 0 or 1):
+
+| Precheck | Document |
+|---|---|
+| `errorCount === 0` (warnings allowed) | `Valid` |
+| one or more error-severity findings | `Invalid`, `innerError[]` one entry per error: `errorCode` = `finding.rule`, `error` = `finding.message`, `propertyPath` = `finding.path`, `target` = `finding.rule` |
+
+Exit 2, timeout (default 10s), spawn failure, stdout over 4 MiB, or output that is not a JSON report: `Invalid` with a single `innerError` `errorCode` `PrecheckFailed` and a short reason. Reasons never include stack traces or absolute temp paths. At most four precheck children run at once; further documents wait in a queue. Temp directories are always removed.
+
+`scripts/precheck-smoke.mjs` submits the private tool's `invalid-math.json` and `valid-invoice-1.1.json` fixtures when `MYINVOIS_PRECHECK` is the path to that tool's `dist/cli.js`. It skips when the env var is unset (CI cannot see the private repo).
 
 ### TIN validate
 
@@ -383,7 +419,7 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 | `correlationId` response header on every response | [Standard header parameters](https://sdk.myinvois.hasil.gov.my/standard-header-parameters/) | No. The header name is the one this spec requires. |
 | Per-endpoint RPM, `429` `RateLimitExceeded`, `Retry-After`, `X-Rate-Limit-*` | [Integration practices](https://sdk.myinvois.hasil.gov.my/integration-practices/) | No. Window is a fixed 60 seconds on the emulator clock. Default RPM numbers follow that page. Search/recent are not implemented; a reserved 12 RPM would apply. |
 | Ids are 26 characters of `[A-Z0-9]` | Submit / get-submission samples on the SDK site | No. The generator is a seeded PRNG, not an LHDN id format proof. |
-| Default validator only checks an Invoice root | Local. The SDK's real rules are much larger. | No. By design this is not the LHDN rule set. |
+| Default validator only checks an Invoice root | Local. The SDK's real rules are much larger. | No. By design this is not the LHDN rule set. `--validator precheck` shells out to myinvois-precheck when you supply it. |
 
 ## Fixtures
 
@@ -395,7 +431,6 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 
 Not in this increment:
 
-- `--validator precheck` (shell out to the myinvois-precheck CLI; not an npm dependency)
 - Intermediary login and the `onbehalfof` header
 - `GET /api/v1.0/documents/recent` and `/documents/search`
 - Dockerfile
