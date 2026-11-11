@@ -32,6 +32,17 @@ curl -s -X POST http://127.0.0.1:8787/connect/token \
   -d 'grant_type=client_credentials&client_id=sample-supplier&client_secret=sample-supplier-secret&scope=InvoicingAPI'
 ```
 
+Docker (local build only; no image is published):
+
+```bash
+docker build -t myinvois-emulator .
+docker run --rm -p 127.0.0.1:8787:8787 myinvois-emulator
+# pass your own flags after the image name, keeping --host 0.0.0.0 and --port 8787:
+docker run --rm -p 127.0.0.1:8787:8787 myinvois-emulator start --host 0.0.0.0 --port 8787 --clock fake --seed 42
+```
+
+The image is `node:20-alpine` (pinned by digest), runs as the `node` user, contains only `dist/`, `package.json` and `fixtures/` (so `--config fixtures/tenants.json` works), and has a `HEALTHCHECK` on `/_emulator/health` at port 8787. Mount your own config with `-v "$PWD/emulator.json:/app/emulator.json:ro"` and add `--config emulator.json`. `scripts/docker-smoke.sh` builds the image, checks health, a token, a submit and a clean `docker stop`; CI runs it on every pull request and on pushes to main.
+
 With `--clock fake` (or `clock: 'fake'` in `createEmulator`), time does not move until you post to `/_emulator/clock/advance`. Validation therefore stays `in progress` until you advance at least `validationDelayMs` (default 2000). The default CLI clock is `real`: validation completes after two seconds of wall time, and the advance endpoint returns 400.
 
 Library:
@@ -481,7 +492,6 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 
 Not in this increment:
 
-- Dockerfile
 - `--record` / `--replay` JSONL
 - Platform APIs (`/api/v1.0/documenttypes`, notifications) and a read-only status page
 - Structural checks for the v1.1 signature block (presence only, no cryptography)
