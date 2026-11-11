@@ -1,0 +1,8 @@
+[
+  {
+    "endpoint": "submit",
+    "kind": "latency",
+    "latencyMs": 250,
+    "probability": 1
+  }
+]

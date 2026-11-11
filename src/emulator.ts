@@ -1,13 +1,15 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { FakeClock, RealClock, isAdjustableClock, type Clock } from './clock.js';
-import { FAKE_CLOCK_START_MS, MAX_BODY_BYTES } from './constants.js';
+import { FAKE_CLOCK_START_MS, MAX_BODY_BYTES, RATE_LIMIT_WINDOW_MS } from './constants.js';
 import { resolveConfig, type EmulatorConfig, type ResolvedConfig, type TenantConfig } from './config.js';
 import { EmulatorEngine, type EngineResult } from './engine.js';
 import { errorBody, standardError } from './errors.js';
+import { FaultError, FaultInjector, parseFaults, type FaultAction, type FaultRule } from './faults.js';
 import { createIdGenerator } from './ids.js';
 import {
   RATE_LIMIT_UNAUTHENTICATED,
   RateLimiter,
+  rateLimitHeaders,
   resolveRateLimit,
   type RateLimitEndpoint,
   type RateLimitOptions,
@@ -25,8 +27,17 @@ export interface EmulatorOptions {
   config?: EmulatorConfig;
   /** Per-endpoint RPM. Enabled by default. `/_emulator/*` is never limited. */
   rateLimit?: RateLimitOptions;
+  /** Deterministic fault rules. `/_emulator/*` is never faulted. */
+  faults?: FaultRule[];
   /** Called when a request handler throws. */
   onError?(error: unknown): void;
+}
+
+class EmulatorClosedError extends Error {
+  constructor() {
+    super('emulator stopped');
+    this.name = 'EmulatorClosedError';
+  }
 }
 
 export interface ListenInfo {
@@ -146,11 +157,17 @@ class EmulatorServer implements Emulator {
   private readonly engine: EmulatorEngine;
   private readonly config: ResolvedConfig;
   private readonly rateLimiter: RateLimiter;
+  private readonly faults: FaultInjector;
   private readonly correlationIds: () => string;
   private readonly preferredHost: string;
   private readonly preferredPort: number;
   private readonly onError: (error: unknown) => void;
+  private readonly pendingDelays = new Set<{
+    timer: ReturnType<typeof setTimeout>;
+    reject: (error: EmulatorClosedError) => void;
+  }>();
   private listening = false;
+  private closed = false;
   private boundPort: number | null = null;
   private boundHost: string | null = null;
   readonly clock: Clock;
@@ -162,6 +179,7 @@ class EmulatorServer implements Emulator {
     const clockMode = isAdjustableClock(this.clock) && !(this.clock instanceof RealClock) ? 'fake' : 'real';
     this.config = resolveConfig(options.config);
     this.rateLimiter = new RateLimiter(this.clock, resolveRateLimit(options.rateLimit));
+    this.faults = new FaultInjector(seed, parseFaults(options.faults ?? [], 'faults'));
     this.engine = new EmulatorEngine(
       this.config,
       this.clock,
@@ -208,6 +226,7 @@ class EmulatorServer implements Emulator {
           reject(new Error('emulator did not bind a TCP port'));
           return;
         }
+        this.closed = false;
         this.listening = true;
         this.boundHost = host;
         this.boundPort = address.port;
@@ -217,6 +236,8 @@ class EmulatorServer implements Emulator {
   }
 
   async stop(): Promise<void> {
+    this.closed = true;
+    this.cancelDelays();
     if (!this.listening) return;
     this.listening = false;
     this.http.closeAllConnections();
@@ -253,9 +274,25 @@ class EmulatorServer implements Emulator {
         send(res, this.invalidTarget(), correlationId);
         return;
       }
-      const result = await this.dispatch(req.method ?? 'GET', normalizePath(url.pathname), url, req);
+      const path = normalizePath(url.pathname);
+      const method = req.method ?? 'GET';
+      if (!path.startsWith('/_emulator')) {
+        const endpoint = apiEndpoint(path);
+        const action = this.faults.evaluate(endpoint);
+        if (action.delayMs > 0) await this.delay(action.delayMs);
+        if (this.closed) return;
+        const injected = this.applyFault(req, action, endpoint);
+        if (injected === 'reset') return;
+        if (injected !== null) {
+          send(res, injected, correlationId);
+          return;
+        }
+      }
+      const result = await this.dispatch(method, path, url, req);
+      if (this.closed) return;
       send(res, result, correlationId);
     } catch (error) {
+      if (error instanceof EmulatorClosedError) return;
       if (error instanceof BodyTooLargeError) {
         send(
           res,
@@ -319,7 +356,29 @@ class EmulatorServer implements Emulator {
     }
     if (path === '/_emulator/reset') {
       if (method !== 'POST') return this.engine.methodNotAllowed('POST');
+      this.faults.resetCounters();
       return this.engine.reset();
+    }
+    if (path === '/_emulator/faults') {
+      if (method === 'GET') return { status: 200, body: { faults: this.faults.snapshot() } };
+      if (method === 'DELETE') {
+        return { status: 200, body: { faults: this.faults.replace([]) } };
+      }
+      if (method !== 'POST') return this.engine.methodNotAllowed('GET, POST, DELETE');
+      const raw = await readBody(req);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw.toString('utf8')) as unknown;
+      } catch {
+        return this.invalidFaults('Request body is not valid JSON', 'Badan permintaan bukan JSON yang sah');
+      }
+      try {
+        const rules = parseFaults(parsed, 'faults');
+        return { status: 200, body: { faults: this.faults.replace(rules) } };
+      } catch (cause) {
+        const detail = cause instanceof FaultError ? cause.message : String(cause);
+        return this.invalidFaults(detail, 'Peraturan ralat yang disuntik tidak sah');
+      }
     }
     if (path === '/_emulator/clock/advance') {
       if (method !== 'POST') return this.engine.methodNotAllowed('POST');
@@ -438,6 +497,89 @@ class EmulatorServer implements Emulator {
     if (!auth.ok) return withHeaders(auth.result, gate.headers);
     return withHeaders(await run(auth.tenant), gate.headers);
   }
+
+  private applyFault(
+    req: IncomingMessage,
+    action: FaultAction,
+    endpoint: RateLimitEndpoint | null,
+  ): EngineResult | 'reset' | null {
+    if (action.kind === 'none') return null;
+    if (action.kind === 'reset') {
+      req.destroy();
+      return 'reset';
+    }
+    if (action.kind === 'error500') {
+      return {
+        status: 500,
+        body: errorBody(
+          standardError({
+            errorCode: 'SystemError',
+            error: 'Internal emulator error',
+            errorMS: 'Ralat dalaman emulator',
+            target: 'server',
+          }),
+        ),
+      };
+    }
+    const now = this.clock.now();
+    const windowStart = Math.floor(now / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_WINDOW_MS;
+    const resetAt = windowStart + RATE_LIMIT_WINDOW_MS;
+    const limit = endpoint === null ? 0 : this.rateLimiter.rpm[endpoint];
+    return this.engine.tooManyRequests(rateLimitHeaders(limit, 0, resetAt, action.retryAfterSeconds));
+  }
+
+  private invalidFaults(error: string, errorMS: string): EngineResult {
+    return {
+      status: this.config.statusCodes.missingParameters,
+      body: errorBody(
+        standardError({
+          propertyName: 'faults',
+          propertyPath: 'faults',
+          errorCode: this.config.errorCodes.invalidRequest,
+          error,
+          errorMS,
+          target: 'faults',
+        }),
+      ),
+    };
+  }
+
+  private delay(ms: number): Promise<void> {
+    if (this.closed) return Promise.reject(new EmulatorClosedError());
+    return new Promise((resolve, reject) => {
+      const entry: {
+        timer: ReturnType<typeof setTimeout>;
+        reject: (error: EmulatorClosedError) => void;
+      } = {
+        timer: setTimeout(() => {
+          this.pendingDelays.delete(entry);
+          resolve();
+        }, ms),
+        reject,
+      };
+      this.pendingDelays.add(entry);
+    });
+  }
+
+  private cancelDelays(): void {
+    const error = new EmulatorClosedError();
+    for (const entry of this.pendingDelays) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
+    }
+    this.pendingDelays.clear();
+  }
+}
+
+function apiEndpoint(path: string): RateLimitEndpoint | null {
+  if (path === '/connect/token') return 'token';
+  if (path === '/api/v1.0/documentsubmissions') return 'submit';
+  if (/^\/api\/v1\.0\/documentsubmissions\/[^/]+$/.test(path)) return 'getSubmission';
+  if (/^\/api\/v1\.0\/documents\/state\/[^/]+\/state$/.test(path)) return 'cancelReject';
+  if (/^\/api\/v1\.0\/documents\/[^/]+\/raw$/.test(path)) return 'getDocument';
+  if (/^\/api\/v1\.0\/documents\/[^/]+\/details$/.test(path)) return 'getDocumentDetails';
+  if (/^\/api\/v1\.0\/taxpayer\/validate\/[^/]+$/.test(path)) return 'validateTin';
+  return null;
 }
 
 function resolveClock(clock: EmulatorOptions['clock']): Clock {

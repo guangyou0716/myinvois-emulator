@@ -1,5 +1,10 @@
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parseArgs, run } from '../src/cli.js';
+import { loadFaultsFile } from '../src/faults.js';
 
 function io() {
   return {
@@ -25,6 +30,7 @@ describe('cli arguments', () => {
       configPath: null,
       rateLimitEnabled: true,
       rpmScale: 1,
+      faultsPath: null,
     });
   });
 
@@ -45,6 +51,8 @@ describe('cli arguments', () => {
         '--rpm-scale',
         '0.5',
         '--no-rate-limit',
+        '--faults',
+        'fixtures/faults/500-storm.json',
       ]),
     ).toEqual({
       mode: 'start',
@@ -55,6 +63,7 @@ describe('cli arguments', () => {
       configPath: 'emulator.json',
       rateLimitEnabled: false,
       rpmScale: 0.5,
+      faultsPath: 'fixtures/faults/500-storm.json',
     });
   });
 
@@ -94,9 +103,44 @@ describe('cli arguments', () => {
     expect(help.out).toContain('--clock');
     expect(help.out).toContain('--rpm-scale');
     expect(help.out).toContain('--no-rate-limit');
+    expect(help.out).toContain('--faults');
     expect(help.out).toContain('127.0.0.1');
     const version = io();
     expect(await run(['--version'], version)).toBe(0);
     expect(version.out.trim()).toBe('0.1.0');
+  });
+
+  it('parses --faults and loads a valid file', () => {
+    const path = fileURLToPath(new URL('../fixtures/faults/500-storm.json', import.meta.url));
+    expect(parseArgs(['start', '--faults', path])).toMatchObject({
+      mode: 'start',
+      faultsPath: path,
+    });
+    expect(loadFaultsFile(path)).toEqual([
+      { endpoint: '*', kind: 'error500', probability: 0.5 },
+    ]);
+  });
+
+  it('rejects a missing or invalid --faults file', async () => {
+    const missing = io();
+    expect(await run(['start', '--faults', join(tmpdir(), 'no-such-faults.json')], missing)).toBe(2);
+    expect(missing.err).toContain('Cannot read faults');
+
+    const dir = mkdtempSync(join(tmpdir(), 'faults-'));
+    try {
+      const badJson = join(dir, 'bad.json');
+      writeFileSync(badJson, '{');
+      const invalidJson = io();
+      expect(await run(['start', '--faults', badJson], invalidJson)).toBe(2);
+      expect(invalidJson.err).toContain('not valid JSON');
+
+      const badRule = join(dir, 'rule.json');
+      writeFileSync(badRule, JSON.stringify([{ endpoint: 'submit', kind: 'error500' }]));
+      const invalidRule = io();
+      expect(await run(['start', '--faults', badRule], invalidRule)).toBe(2);
+      expect(invalidRule.err).toMatch(/probability or nth/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

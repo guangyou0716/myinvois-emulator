@@ -3,6 +3,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadConfigFile, type EmulatorConfig } from './config.js';
 import { createEmulator } from './emulator.js';
+import { loadFaultsFile, type FaultRule } from './faults.js';
 
 export interface CliIo {
   stdout(text: string): void;
@@ -10,7 +11,7 @@ export interface CliIo {
 }
 
 const USAGE =
-  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit]';
+  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit] [--faults faults.json]';
 
 const HELP = `${USAGE}
 
@@ -27,6 +28,7 @@ Options:
   --config    JSON config file. Omitted fields keep the built-in defaults
   --rpm-scale Multiply per-endpoint RPM (floor, minimum 1). Default 1
   --no-rate-limit Disable per-endpoint rate limits
+  --faults    JSON file of fault rules (array or {"faults": [...]}). Default none
   --help      Show this help
   --version   Print the package version
 
@@ -46,6 +48,7 @@ type Parsed =
       configPath: string | null;
       rateLimitEnabled: boolean;
       rpmScale: number;
+      faultsPath: string | null;
     };
 
 function packageVersion(): string {
@@ -79,6 +82,7 @@ export function parseArgs(argv: string[]): Parsed {
   let configPath: string | null = null;
   let rateLimitEnabled = true;
   let rpmScale = 1;
+  let faultsPath: string | null = null;
 
   try {
     for (let index = 0; index < argv.length; index += 1) {
@@ -135,6 +139,11 @@ export function parseArgs(argv: string[]): Parsed {
         rateLimitEnabled = false;
         continue;
       }
+      if (arg === '--faults') {
+        faultsPath = takeValue(argv, index, '--faults');
+        index += 1;
+        continue;
+      }
       if (arg.startsWith('--')) return { mode: 'error', message: `Unknown option: ${arg}` };
       return { mode: 'error', message: `Unexpected argument: ${arg}` };
     }
@@ -143,7 +152,7 @@ export function parseArgs(argv: string[]): Parsed {
   }
 
   if (command !== 'start') return { mode: 'error', message: 'Missing command: start' };
-  return { mode: 'start', port, host, seed, clock, configPath, rateLimitEnabled, rpmScale };
+  return { mode: 'start', port, host, seed, clock, configPath, rateLimitEnabled, rpmScale, faultsPath };
 }
 
 export async function run(argv: string[], io: CliIo): Promise<number> {
@@ -171,12 +180,23 @@ export async function run(argv: string[], io: CliIo): Promise<number> {
     }
   }
 
+  let faults: FaultRule[] | undefined;
+  if (parsed.faultsPath) {
+    try {
+      faults = loadFaultsFile(parsed.faultsPath);
+    } catch (cause) {
+      io.stderr(`${cause instanceof Error ? cause.message : String(cause)}\n`);
+      return 2;
+    }
+  }
+
   const emulator = createEmulator({
     seed: parsed.seed,
     clock: parsed.clock,
     host: parsed.host,
     port: parsed.port,
     config,
+    faults,
     rateLimit: {
       enabled: parsed.rateLimitEnabled,
       scale: parsed.rpmScale,
