@@ -33,6 +33,7 @@ describe('cli arguments', () => {
       faultsPath: null,
       validator: 'none',
       precheckCommand: null,
+      recordPath: null,
     });
   });
 
@@ -68,6 +69,7 @@ describe('cli arguments', () => {
       faultsPath: 'fixtures/faults/500-storm.json',
       validator: 'none',
       precheckCommand: null,
+      recordPath: null,
     });
   });
 
@@ -162,6 +164,7 @@ describe('cli arguments', () => {
       mode: 'start',
       validator: 'none',
       precheckCommand: null,
+      recordPath: null,
     });
   });
 
@@ -189,5 +192,11 @@ describe('cli arguments', () => {
     const streams = io();
     expect(await run(['start', '--validator', 'precheck'], streams)).toBe(2);
     expect(streams.err).toContain('--precheck-cmd');
+  });
+});
+
+describe('cli --record', () => {
+  it('parses --record into recordPath', () => {
+    expect(parseArgs(['start', '--record', 'out.jsonl'])).toMatchObject({ mode: 'start', recordPath: 'out.jsonl' });
   });
 });

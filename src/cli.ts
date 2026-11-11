@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfigFile, type EmulatorConfig } from './config.js';
 import { createEmulator } from './emulator.js';
 import { loadFaultsFile, type FaultRule } from './faults.js';
+import { createJsonlRecorder, type Recorder } from './record.js';
 import { splitCommand, ValidatorError, type ValidatorOption } from './validator.js';
 
 export interface CliIo {
@@ -12,7 +13,7 @@ export interface CliIo {
 }
 
 const USAGE =
-  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit] [--faults faults.json] [--validator none|precheck] [--precheck-cmd "<cmd>"]';
+  'Usage: myinvois-emulator start [--port 8787] [--host 127.0.0.1] [--seed 1] [--clock real|fake] [--config emulator.json] [--rpm-scale 1] [--no-rate-limit] [--faults faults.json] [--validator none|precheck] [--precheck-cmd "<cmd>"] [--record requests.jsonl]';
 
 const HELP = `${USAGE}
 
@@ -32,6 +33,7 @@ Options:
   --faults    JSON file of fault rules (array or {"faults": [...]}). Default none
   --validator none (Invoice root only) or precheck (shell out to myinvois-precheck). Default none
   --precheck-cmd  Command to run for --validator precheck, e.g. "node dist/cli.js --json". Required when precheck
+  --record    Append one redacted JSON line per request/response to this file (client_secret and access_token become [redacted]; Authorization is not stored)
   --help      Show this help
   --version   Print the package version
 
@@ -54,6 +56,7 @@ type Parsed =
       faultsPath: string | null;
       validator: 'none' | 'precheck';
       precheckCommand: string[] | null;
+      recordPath: string | null;
     };
 
 function packageVersion(): string {
@@ -90,6 +93,7 @@ export function parseArgs(argv: string[]): Parsed {
   let faultsPath: string | null = null;
   let validator: 'none' | 'precheck' = 'none';
   let precheckCmd: string | null = null;
+  let recordPath: string | null = null;
 
   try {
     for (let index = 0; index < argv.length; index += 1) {
@@ -165,6 +169,12 @@ export function parseArgs(argv: string[]): Parsed {
         index += 1;
         continue;
       }
+      if (arg === '--record') {
+        recordPath = takeValue(argv, index, '--record');
+        if (recordPath.trim() === '') return { mode: 'error', message: '--record requires a file path' };
+        index += 1;
+        continue;
+      }
       if (arg.startsWith('--')) return { mode: 'error', message: `Unknown option: ${arg}` };
       return { mode: 'error', message: `Unexpected argument: ${arg}` };
     }
@@ -207,6 +217,7 @@ export function parseArgs(argv: string[]): Parsed {
     faultsPath,
     validator,
     precheckCommand,
+    recordPath,
   };
 }
 
@@ -245,6 +256,16 @@ export async function run(argv: string[], io: CliIo): Promise<number> {
     }
   }
 
+  let record: Recorder | undefined;
+  if (parsed.recordPath) {
+    try {
+      record = createJsonlRecorder(parsed.recordPath);
+    } catch (cause) {
+      io.stderr(`--record: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+      return 2;
+    }
+  }
+
   const validator: ValidatorOption =
     parsed.validator === 'precheck' && parsed.precheckCommand
       ? { kind: 'precheck', command: parsed.precheckCommand }
@@ -260,6 +281,7 @@ export async function run(argv: string[], io: CliIo): Promise<number> {
       config,
       faults,
       validator,
+      record,
       rateLimit: {
         enabled: parsed.rateLimitEnabled,
         scale: parsed.rpmScale,

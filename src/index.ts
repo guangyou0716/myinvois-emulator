@@ -67,3 +67,5 @@ export {
   RATE_LIMIT_WINDOW_MS,
   SUBMISSION_MAX_BYTES,
 } from './constants.js';
+export { createJsonlRecorder, redactForm, redactJson, REDACTED } from './record.js';
+export type { RecordEntry, Recorder } from './record.js';

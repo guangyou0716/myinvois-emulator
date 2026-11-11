@@ -371,6 +371,19 @@ Example files, also loaded by tests:
 
 Pending latency timers are cancelled when the server stops, so a delayed request cannot outlive `emulator.stop()`.
 
+## Recording requests
+
+`--record requests.jsonl` (library: `record` option, or `createJsonlRecorder(path)`) appends one JSON line per exchange when the response finishes or the connection drops:
+
+```json
+{"seq":1,"at":"2026-11-11T16:19:21.036Z","method":"POST","target":"/connect/token","requestHeaders":{"content-type":"application/x-www-form-urlencoded"},"requestBody":"grant_type=client_credentials&client_id=sample-supplier&client_secret=%5Bredacted%5D&scope=InvoicingAPI","status":200,"responseBody":"{\"access_token\":\"[redacted]\",\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"InvoicingAPI\"}"}
+```
+
+- `client_secret` (form or JSON) and top-level `access_token` become `[redacted]`. The `Authorization` header is never stored; only `content-type` and `onbehalfof` are kept.
+- Submission bodies are stored as sent, including base64 documents. Do not record real invoices you would not keep in a file.
+- `status` and `responseBody` are `null` for a dropped connection (for example a `reset` fault). A missing directory or unwritable file is a startup error (exit 2). A recorder that throws is reported through `onError`; the response is unaffected.
+- Replaying a recording against the emulator is not built in yet.
+
 ## Control endpoints
 
 No bearer token. They are how tests move time without sleeping.
@@ -492,7 +505,7 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 
 Not in this increment:
 
-- `--record` / `--replay` JSONL
+- `--replay` of a `--record` JSONL file
 - Platform APIs (`/api/v1.0/documenttypes`, notifications) and a read-only status page
 - Structural checks for the v1.1 signature block (presence only, no cryptography)
 
