@@ -126,6 +126,7 @@ describe('recorder', () => {
       requestBody: null,
       status: 404,
       responseBody: null,
+      authFrom: null,
     };
     recorder(entry);
     recorder({ ...entry, seq: 2 });
