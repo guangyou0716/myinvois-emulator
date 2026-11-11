@@ -24,7 +24,7 @@ Default client for the public samples (the supplier TIN in those files is the pl
 |---|---|
 | client_id | `sample-supplier` |
 | client_secret | `sample-supplier-secret` |
-| scope | `InvoicingAPI` |
+| scope | `InvoicingAPI` (optional; granted when omitted) |
 
 ```bash
 curl -s -X POST http://127.0.0.1:8787/connect/token \
@@ -461,7 +461,7 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 | Behaviour | Official doc | Verified against real sandbox? |
 |---|---|---|
 | `POST /connect/token`, form body, `grant_type=client_credentials`, response `access_token` / `token_type` / `expires_in` 3600 | [Login as Taxpayer System](https://sdk.myinvois.hasil.gov.my/api/07-login-as-taxpayer-system/) | No |
-| Missing or placeholder client parameters return 400. Only a Basic header, with no form body, returns 400. | [Login](https://sdk.myinvois.hasil.gov.my/api/07-login-as-taxpayer-system/), [FAQ](https://sdk.myinvois.hasil.gov.my/faq/) | No. 400 for a body-less Basic call is taken from field reports, not re-checked here. The placeholder list (`0`, `YOUR_*`, empty) is local. |
+| `scope` is optional: omitted or empty grants `InvoicingAPI`; a supplied scope is trimmed and echoed. Missing or placeholder client parameters (and a placeholder `scope`) return 400. Only a Basic header, with no form body, returns 400. | [Login](https://sdk.myinvois.hasil.gov.my/api/07-login-as-taxpayer-system/), [Intermediary login](https://sdk.myinvois.hasil.gov.my/api/08-login-as-intermediary-system/), [FAQ](https://sdk.myinvois.hasil.gov.my/faq/) | No. Both login pages mark `scope` optional; granting `InvoicingAPI` when it is omitted is inferred. 400 for a body-less Basic call is taken from field reports, not re-checked here. The placeholder list (`0`, `YOUR_*`, empty) is local. |
 | Wrong client id or secret returns 403 `invalid_client`, wrapped in the standard error envelope | [FAQ](https://sdk.myinvois.hasil.gov.my/faq/) (403 Forbidden for a bad client id/secret) | No. The FAQ states 403. Using the standard `error` object, and the code `invalid_client`, is inferred. OAuth token endpoints often return a flatter body. |
 | Missing or expired bearer on API routes returns 401 | [Login](https://sdk.myinvois.hasil.gov.my/api/07-login-as-taxpayer-system/) | No. Error code `Unauthorized` is local. |
 | Submit limits: 100 documents, 5MB total, 300KB each. `400 MaximumSizeExceeded`. Hash is SHA-256 of the raw document; `document` is base64 of the same bytes. | [Submit Documents](https://sdk.myinvois.hasil.gov.my/einvoicingapi/02-submit-documents/), [FAQ](https://sdk.myinvois.hasil.gov.my/faq/) | No. This build treats KB as 1024 bytes (`300 * 1024`, `5 * 1024 * 1024`). A value equal to the limit is allowed. |

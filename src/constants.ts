@@ -14,6 +14,8 @@ export const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 export const DEFAULT_VALIDATION_DELAY_MS = 2000;
 export const DEFAULT_TOKEN_TTL_SECONDS = 3600;
+/** Scope granted when a token request omits `scope` (optional on the SDK login pages). */
+export const DEFAULT_TOKEN_SCOPE = 'InvoicingAPI';
 export const ID_LENGTH = 26;
 export const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
