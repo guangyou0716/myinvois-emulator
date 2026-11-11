@@ -60,9 +60,56 @@ npm run lint
 npm test            vitest
 npm run check       lint, typecheck, and test
 npm run e2e         build output: token, sample submit, validate, cancel, late cancel
+npm run contract    official Postman collection against a local emulator (newman)
 ```
 
-Node.js 20 or newer. Runtime dependencies: none (`node:http` only).
+Node.js 20 or newer. Runtime dependencies: none (`node:http` only). Newman is a devDependency used only by `npm run contract`.
+
+## Contract check
+
+`npm run contract` starts the emulator (`port 0`, fake clock, seed 42, rate limits on) and runs the official LHDN MyInvois Postman collection against it. It proves the in-scope official requests reach the **expected HTTP status** on this emulator. It does not prove sandbox compatibility.
+
+The collection is **not** vendored. The script downloads
+
+`https://sdk.myinvois.hasil.gov.my/files/EInvoicing%20SDK.postman_collection.json`
+
+(with retries and a timeout), verifies sha256 `0d06b70e63648bf68a267b7fb1e88a7c4c0d7193946f5973d09271823ca3ee79` (pinned 2026-11-11), and caches the file under `.cache/`. Set `CONTRACT_COLLECTION=/path/to/collection.json` to use a local copy; the pin is still checked. A sha mismatch fails with the expected and actual digests — LHDN published a new collection.
+
+The runner rewrites `https://{{idSrvBaseUrl}}` and `https://{{apiBaseUrl}}` to the emulator's loopback URL, fills placeholders with the built-in fake tenants, injects a valid sample Invoice submit body, and adds Postman tests for the expected status. Dependent ids (`generatedAccessToken`, `submissionUid`, `documentUUID`) come from earlier responses. After Submit Documents it posts `/_emulator/clock/advance` so fake-clock validation can finish before Get / Cancel.
+
+In-scope requests and expected status:
+
+| Request | Expected | Notes |
+|---|---|---|
+| Login as Taxpayer System | 200 | `sample-supplier` / `sample-supplier-secret` |
+| Login as Intermediary System | 200 | The emulator does not implement `onbehalfof`; the header is ignored and a token is issued for `intermediary-a`. The taxpayer token is kept for later calls. |
+| Validate taxpayer TIN | 200 | Known fake TIN `C00000000000` + `BRN` / `201901000001` |
+| Submit Documents | 202 | Public `1.1-Invoice-Sample.json` |
+| Get Submission | 200 | `submissionUID` from submit |
+| Get Document | 200 | raw body for the submitted uuid |
+| Get Document Details | 200 | |
+| Cancel Document | 200 | supplier, within the 72-hour window |
+| Reject Document | 400 | Same uuid after Cancel, still the supplier token. Already `Cancelled` → `IncorrectState`. |
+
+Skipped (listed in `reports/contract.txt`, not silent):
+
+| Request | Reason |
+|---|---|
+| Get All Document Types | Platform document types are not implemented |
+| Get Document Type | Platform document types are not implemented |
+| Get Document Type Version | Platform document types are not implemented |
+| Get Notifications | Platform notifications are not implemented |
+| Get Recent Documents | Not implemented |
+| Search Documents | Not implemented |
+
+The script writes `reports/contract.json` and `reports/contract.txt` (gitignored) and exits nonzero if an assertion fails or an in-scope request is missing from the collection.
+
+To update the pin after LHDN publishes a new collection:
+
+1. Download the new JSON and `sha256sum` it.
+2. Diff request names against `IN_SCOPE` / `SKIPPED` in `scripts/contract-transform.mjs`.
+3. Replace `PINNED_SHA256` there and the digest in this section.
+4. Adjust expected statuses if a renamed or new in-scope request needs it.
 
 ## Endpoints
 
@@ -348,7 +395,6 @@ Nothing in this table has been checked against the live sandbox or preprod. The 
 
 Not in this increment:
 
-- Official Postman collection and newman contract tests
 - `--validator precheck` (shell out to the myinvois-precheck CLI; not an npm dependency)
 - Intermediary login and the `onbehalfof` header
 - `GET /api/v1.0/documents/recent` and `/documents/search`
