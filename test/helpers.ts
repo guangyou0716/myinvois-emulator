@@ -8,6 +8,7 @@ import type { FaultRule } from '../src/faults.js';
 import type { RateLimitOptions } from '../src/rate-limit.js';
 import type { PrecheckIo } from '../src/precheck.js';
 import type { ValidatorOption } from '../src/validator.js';
+import type { Recorder } from '../src/record.js';
 
 export function samplePath(name: string): string {
   return fileURLToPath(new URL(`../fixtures/samples/${name}`, import.meta.url));
@@ -68,6 +69,7 @@ export async function startServer(options?: {
   validator?: ValidatorOption;
   precheckIo?: Partial<PrecheckIo>;
   config?: EmulatorConfig;
+  record?: Recorder;
 }): Promise<{
   emulator: Emulator;
   base: string;
@@ -81,6 +83,7 @@ export async function startServer(options?: {
     validator: options?.validator,
     precheckIo: options?.precheckIo,
     config: options?.config,
+    record: options?.record,
   });
   const info = await emulator.start({ port: 0, host: '127.0.0.1' });
   if (!info.url.startsWith('http://127.0.0.1:')) {

@@ -8,6 +8,7 @@ import { FaultError, FaultInjector, parseFaults, type FaultAction, type FaultRul
 import { createIdGenerator } from './ids.js';
 import { PrecheckRunner, type PrecheckIo } from './precheck.js';
 import { resolveValidator, type ValidatorOption } from './validator.js';
+import { redactForm, redactJson, type Recorder } from './record.js';
 import {
   RATE_LIMIT_UNAUTHENTICATED,
   RateLimiter,
@@ -40,7 +41,17 @@ export interface EmulatorOptions {
   precheckIo?: Partial<PrecheckIo>;
   /** Called when a request handler throws. */
   onError?(error: unknown): void;
+  /**
+   * Called once per finished or dropped request with a redacted copy of the exchange.
+   * A throwing recorder is reported through `onError` and does not affect the response.
+   */
+  record?: Recorder;
 }
+
+/** Request bodies the handlers read, kept only for the recorder. */
+const capturedRequestBodies = new WeakMap<IncomingMessage, Buffer>();
+/** Response payloads written by `send`, kept only for the recorder. */
+const capturedResponseBodies = new WeakMap<ServerResponse, string>();
 
 class EmulatorClosedError extends Error {
   constructor() {
@@ -118,7 +129,9 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 
     const onEnd = () => {
       finish(() => {
-        resolve(Buffer.concat(chunks));
+        const body = Buffer.concat(chunks);
+        capturedRequestBodies.set(req, body);
+        resolve(body);
       });
     };
 
@@ -171,6 +184,8 @@ class EmulatorServer implements Emulator {
   private readonly preferredHost: string;
   private readonly preferredPort: number;
   private readonly onError: (error: unknown) => void;
+  private readonly recorder: Recorder | null;
+  private recordSeq = 0;
   private readonly pendingDelays = new Set<{
     timer: ReturnType<typeof setTimeout>;
     reject: (error: EmulatorClosedError) => void;
@@ -205,6 +220,7 @@ class EmulatorServer implements Emulator {
     this.preferredHost = options.host ?? '127.0.0.1';
     this.preferredPort = options.port ?? 8787;
     this.onError = options.onError ?? (() => undefined);
+    this.recorder = options.record ?? null;
     this.http = createServer((req, res) => {
       void this.handle(req, res);
     });
@@ -279,8 +295,47 @@ class EmulatorServer implements Emulator {
     };
   }
 
+  private record(req: IncomingMessage, res: ServerResponse): void {
+    const recorder = this.recorder;
+    if (recorder === null) return;
+    const seq = ++this.recordSeq;
+    const requestHeaders: Record<string, string> = {};
+    for (const name of ['content-type', 'onbehalfof'] as const) {
+      const value = req.headers[name];
+      if (typeof value === 'string') requestHeaders[name] = value;
+    }
+    const rawRequest = capturedRequestBodies.get(req);
+    const contentType = requestHeaders['content-type'] ?? '';
+    let requestBody: string | null = null;
+    if (rawRequest !== undefined) {
+      const text = rawRequest.toString('utf8');
+      requestBody = contentType.includes('application/x-www-form-urlencoded') ? redactForm(text) : redactJson(text);
+    }
+    const rawResponse = capturedResponseBodies.get(res);
+    const finished = res.writableFinished;
+    try {
+      recorder({
+        seq,
+        at: new Date(this.clock.now()).toISOString(),
+        method: req.method ?? 'GET',
+        target: req.url ?? '/',
+        requestHeaders,
+        requestBody,
+        status: finished ? res.statusCode : null,
+        responseBody: finished && rawResponse !== undefined ? redactJson(rawResponse) : null,
+      });
+    } catch (error) {
+      this.onError(error);
+    }
+  }
+
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const correlationId = this.correlationIds();
+    if (this.recorder !== null) {
+      res.once('close', () => {
+        this.record(req, res);
+      });
+    }
     try {
       const hostHeader = req.headers.host ?? this.preferredHost;
       const url = parseRequestTarget(req.url, hostHeader);
@@ -640,6 +695,7 @@ function send(
   headers['content-type'] = 'application/json; charset=utf-8';
   res.writeHead(result.status, headers);
   const payload = JSON.stringify(result.body);
+  capturedResponseBodies.set(res, payload);
   if (onFinish) res.end(payload, onFinish);
   else res.end(payload);
 }
