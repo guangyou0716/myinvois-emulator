@@ -1,4 +1,6 @@
 # Weekly update PRs. Nothing merges automatically; each PR goes through CI and review.
+# Major versions are ignored everywhere: a major upgrade (Node, ESLint, Vitest, actions) is a deliberate,
+# separately planned change. Minor and patch bumps arrive as one grouped PR per ecosystem.
 version: 2
 updates:
   - package-ecosystem: docker
@@ -6,15 +8,26 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # Stay on Node 20 until a deliberate major upgrade; digest and patch bumps still come through.
-      - dependency-name: node
+      - dependency-name: '*'
         update-types: ['version-update:semver-major']
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+    groups:
+      npm-minor-patch:
+        update-types: ['minor', 'patch']
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+    groups:
+      actions-minor-patch:
+        update-types: ['minor', 'patch']
