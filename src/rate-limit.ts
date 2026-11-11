@@ -14,6 +14,8 @@ export const RATE_LIMIT_ENDPOINTS = [
   'cancelReject',
   'getDocument',
   'getDocumentDetails',
+  'getRecent',
+  'search',
   'validateTin',
 ] as const;
 
@@ -21,10 +23,7 @@ export type RateLimitEndpoint = (typeof RATE_LIMIT_ENDPOINTS)[number];
 
 export type RateLimitRpm = Record<RateLimitEndpoint, number>;
 
-/**
- * Defaults from the MyInvois integration-practices RPM table.
- * Search and recent-document routes are not implemented; see README.
- */
+/** Defaults from the MyInvois integration-practices RPM table. */
 export const DEFAULT_RPM: RateLimitRpm = {
   token: 12,
   submit: 100,
@@ -32,6 +31,8 @@ export const DEFAULT_RPM: RateLimitRpm = {
   cancelReject: 12,
   getDocument: 60,
   getDocumentDetails: 125,
+  getRecent: 12,
+  search: 12,
   validateTin: 60,
 };
 

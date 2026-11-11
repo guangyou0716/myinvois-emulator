@@ -39,8 +39,14 @@ export type { FaultAction, FaultEndpoint, FaultKind, FaultRule } from './faults.
 export { defaultConfig, DEFAULT_TENANTS } from './defaults.js';
 export { loadConfigFile, parseConfig, resolveConfig, ConfigError } from './config.js';
 export type { EmulatorConfig, ResolvedConfig, TenantConfig, TenantRole } from './config.js';
-export { inspectDocument, validateNone, xmlRootLocalName } from './document.js';
-export type { DocumentFormat, DocumentInspection, NoneValidation } from './document.js';
+export {
+  DOCUMENT_TYPE_NAMES,
+  inspectDocument,
+  PARTY_ID_SCHEMES,
+  validateNone,
+  xmlRootLocalName,
+} from './document.js';
+export type { DocumentFormat, DocumentInspection, NoneValidation, PartyId, PartyIdScheme } from './document.js';
 export { resolveValidator, splitCommand, ValidatorError } from './validator.js';
 export type { ResolvedValidator, ValidatorOption } from './validator.js';
 export {
@@ -54,6 +60,10 @@ export {
   ID_LENGTH,
   PRECHECK_CONCURRENCY,
   PRECHECK_MAX_STDOUT_BYTES,
+  MAX_QUERY_RESULTS,
+  QUERY_PAGE_SIZE_DEFAULT,
+  QUERY_WINDOW_DAYS,
+  QUERY_WINDOW_MS,
   RATE_LIMIT_WINDOW_MS,
   SUBMISSION_MAX_BYTES,
 } from './constants.js';

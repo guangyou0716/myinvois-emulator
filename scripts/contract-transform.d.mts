@@ -13,6 +13,8 @@ export const SYNTHETIC: {
   idValue: string;
   codeNumber: string;
   format: string;
+  submissionDateFrom: string;
+  submissionDateTo: string;
 };
 
 export interface InScopeRequest {

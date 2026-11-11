@@ -23,6 +23,17 @@ export const FAKE_CLOCK_START_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
 export const MAX_BODY_BYTES = 16 * 1024 * 1024;
 export const MAX_REASON_LENGTH = 300;
 export const MAX_PAGE_SIZE = 100;
+/** Default and maximum page size for Get Recent Documents and Search Documents. */
+export const QUERY_PAGE_SIZE_DEFAULT = 100;
+/**
+ * Recent documents cover the last 31 days on the emulator clock (issued date,
+ * falling back to dateTimeReceived). Search date-range pairs may span at most
+ * 31 days. From LHDN Get Recent Documents and Search Documents pages.
+ */
+export const QUERY_WINDOW_DAYS = 31;
+export const QUERY_WINDOW_MS = QUERY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+/** Cap on matching documents returned by recent/search before paging. */
+export const MAX_QUERY_RESULTS = 10_000;
 
 /** Default wall-clock timeout for a precheck child process. */
 export const DEFAULT_PRECHECK_TIMEOUT_MS = 10_000;
